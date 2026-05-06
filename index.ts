@@ -84,8 +84,35 @@ const meshPlugin = {
     api.registerTool((ctx) => createMeshBroadcastTool(crdt, ctx), { name: "mesh_broadcast" });
     api.registerTool((ctx) => createMeshSyncTool(crdt, ctx), { name: "mesh_sync" });
 
+    // Start services on gateway start
+    api.on("gateway_start", async () => {
+      try {
+        api.logger.info("Starting mesh services...");
+
+        await discovery.start();
+        await transport.start();
+        await fileWatcher.start();
+
+        api.logger.info("Mesh services started successfully");
+      } catch (err) {
+        api.logger.error(`Failed to start mesh services: ${err}`);
+      }
+    });
+
+    // Stop services on gateway stop
+    api.on("gateway_stop", async () => {
+      try {
+        await fileWatcher.stop();
+        await transport.stop();
+        await discovery.stop();
+        api.logger.info("Mesh services stopped");
+      } catch (err) {
+        api.logger.error(`Error stopping mesh services: ${err}`);
+      }
+    });
+
     // Hook into heartbeat for periodic sync
-    api.on("heartbeat", async () => {
+    api.on("heartbeat_prompt_contribution", async () => {
       try {
         // Scan for new peers
         await discovery.scan();
