@@ -47,6 +47,9 @@ export function createFileWatcher(config) {
         if (delta) {
             logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
         }
+        else {
+            logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+        }
     };
     return {
         async start() {

@@ -32,6 +32,7 @@ export function createCRDT(config: CRDTConfig): CRDTService {
   const { nodeName, logger } = config;
 
   const docs = new Map<string, any>();
+  const docInitialized = new Set<string>();
   const pendingDeltas: Delta[] = [];
 
   const getOrCreateDoc = async (file: string): Promise<any> => {
@@ -74,8 +75,9 @@ export function createCRDT(config: CRDTConfig): CRDTService {
         const { doc, text } = docData;
 
         const currentContent = text.toString();
+        const isNew = !docInitialized.has(file);
 
-        if (currentContent === content) {
+        if (currentContent === content && !isNew) {
           return null;
         }
 
@@ -83,6 +85,8 @@ export function createCRDT(config: CRDTConfig): CRDTService {
           text.delete(0, text.length);
           text.insert(0, content);
         });
+
+        docInitialized.add(file);
 
         const delta: Delta = {
           file,

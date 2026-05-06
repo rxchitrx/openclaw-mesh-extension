@@ -1,6 +1,7 @@
 export function createCRDT(config) {
     const { nodeName, logger } = config;
     const docs = new Map();
+    const docInitialized = new Set();
     const pendingDeltas = [];
     const getOrCreateDoc = async (file) => {
         if (!docs.has(file)) {
@@ -36,13 +37,15 @@ export function createCRDT(config) {
                 const docData = await getOrCreateDoc(file);
                 const { doc, text } = docData;
                 const currentContent = text.toString();
-                if (currentContent === content) {
+                const isNew = !docInitialized.has(file);
+                if (currentContent === content && !isNew) {
                     return null;
                 }
                 doc.transact(() => {
                     text.delete(0, text.length);
                     text.insert(0, content);
                 });
+                docInitialized.add(file);
                 const delta = {
                     file,
                     changes: [{ type: "replace", content }],

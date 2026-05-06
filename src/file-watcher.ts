@@ -70,6 +70,8 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
     if (delta) {
       logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+    } else {
+      logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
     }
   };
 
