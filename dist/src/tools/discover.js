@@ -9,6 +9,7 @@ export function createMeshDiscoverTool(discovery, _ctx) {
             required: [],
         },
         execute: async (_toolCallId, _toolParams, _signal, _onUpdate) => {
+            await discovery.scan();
             const localNode = discovery.getLocalNode();
             const peers = discovery.getPeers();
             const now = new Date().toISOString();

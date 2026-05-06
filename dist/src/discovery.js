@@ -1,3 +1,4 @@
+import * as os from "os";
 const MESH_SERVICE_TYPE = "oc-mesh";
 export function createDiscovery(config) {
     const { nodeName, port, logger } = config;
@@ -5,22 +6,22 @@ export function createDiscovery(config) {
     let bonjour = null;
     let service = null;
     let browser = null;
-    let localHost = "0.0.0.0";
-    const getLocalIP = async () => {
-        const os = await import("os");
+    const getLocalIP = () => {
         const interfaces = os.networkInterfaces();
+        const nonInternal = [];
         for (const name of Object.keys(interfaces)) {
             for (const iface of interfaces[name] || []) {
                 if (iface.family === "IPv4" && !iface.internal) {
-                    return iface.address;
+                    nonInternal.push({ name, address: iface.address });
                 }
             }
         }
-        return "127.0.0.1";
+        if (nonInternal.length === 0)
+            return "127.0.0.1";
+        return nonInternal[nonInternal.length - 1].address;
     };
     return {
         async start() {
-            localHost = await getLocalIP();
             try {
                 const { Bonjour } = await import("bonjour-service");
                 bonjour = new Bonjour();
@@ -62,7 +63,7 @@ export function createDiscovery(config) {
                     }
                 });
                 browser.start();
-                logger.info(`Mesh discovery started: ${nodeName} at ${localHost}:${port} (${MESH_SERVICE_TYPE})`);
+                logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port} (${MESH_SERVICE_TYPE})`);
             }
             catch (err) {
                 logger.error(`Failed to start mDNS discovery: ${err}`);
@@ -114,7 +115,7 @@ export function createDiscovery(config) {
             return Array.from(peers.values());
         },
         getLocalNode() {
-            return { name: nodeName, host: localHost, port };
+            return { name: nodeName, host: getLocalIP(), port };
         },
     };
 }

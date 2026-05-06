@@ -11,6 +11,7 @@ export function createMeshDiscoverTool(discovery: DiscoveryService, _ctx: any) {
       required: [] as string[],
     },
     execute: async (_toolCallId: string, _toolParams: any, _signal: any, _onUpdate: any) => {
+      await discovery.scan();
       const localNode = discovery.getLocalNode();
       const peers = discovery.getPeers();
       const now = new Date().toISOString();

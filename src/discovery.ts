@@ -1,3 +1,5 @@
+import * as os from "os";
+
 export type PeerInfo = {
   name: string;
   host: string;
@@ -28,25 +30,25 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
   let bonjour: any = null;
   let service: any = null;
   let browser: any = null;
-  let localHost = "0.0.0.0";
 
-  const getLocalIP = async (): Promise<string> => {
-    const os = await import("os");
+  const getLocalIP = (): string => {
     const interfaces = os.networkInterfaces();
 
+    const nonInternal: Array<{ name: string; address: string }> = [];
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name] || []) {
         if (iface.family === "IPv4" && !iface.internal) {
-          return iface.address;
+          nonInternal.push({ name, address: iface.address });
         }
       }
     }
-    return "127.0.0.1";
+
+    if (nonInternal.length === 0) return "127.0.0.1";
+    return nonInternal[nonInternal.length - 1].address;
   };
 
   return {
     async start() {
-      localHost = await getLocalIP();
 
       try {
         const { Bonjour } = await import("bonjour-service");
@@ -99,7 +101,7 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
 
         browser.start();
 
-        logger.info(`Mesh discovery started: ${nodeName} at ${localHost}:${port} (${MESH_SERVICE_TYPE})`);
+        logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port} (${MESH_SERVICE_TYPE})`);
       } catch (err) {
         logger.error(`Failed to start mDNS discovery: ${err}`);
         logger.warn("Mesh will run in standalone mode (no peer discovery)");
@@ -151,7 +153,7 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
     },
 
     getLocalNode() {
-      return { name: nodeName, host: localHost, port };
+      return { name: nodeName, host: getLocalIP(), port };
     },
   };
 }
