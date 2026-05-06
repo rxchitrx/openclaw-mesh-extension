@@ -1,5 +1,3 @@
-import type { PluginLogger } from "openclaw/plugin-sdk";
-
 export type PeerInfo = {
   name: string;
   host: string;
@@ -10,7 +8,7 @@ export type PeerInfo = {
 export type DiscoveryConfig = {
   nodeName: string;
   port: number;
-  logger: PluginLogger;
+  logger: any;
 };
 
 export type DiscoveryService = {
@@ -21,23 +19,21 @@ export type DiscoveryService = {
   getLocalNode: () => { name: string; host: string; port: number };
 };
 
-// mDNS service type for OpenClaw mesh
 const MESH_SERVICE_TYPE = "_openclaw-mesh._tcp";
 
 export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
   const { nodeName, port, logger } = config;
   const peers = new Map<string, PeerInfo>();
 
-  let mdnsServer: any = null;
+  let service: any = null;
   let localHost = "0.0.0.0";
 
-  const getLocalIP = (): string => {
-    const os = require("os");
+  const getLocalIP = async (): Promise<string> => {
+    const os = await import("os");
     const interfaces = os.networkInterfaces();
 
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name] || []) {
-        // Skip internal and non-IPv4 addresses
         if (iface.family === "IPv4" && !iface.internal) {
           return iface.address;
         }
@@ -48,65 +44,25 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
 
   return {
     async start() {
-      localHost = getLocalIP();
+      localHost = await getLocalIP();
 
       try {
-        // Dynamic import for ESM compatibility
-        const { Advertisement, Browser } = await import("@homebridge/ciao");
+        const { getResponder } = await import("@homebridge/ciao");
 
-        // Advertise ourselves
-        mdnsServer = new Advertisement(MESH_SERVICE_TYPE, port, {
+        const responder = getResponder();
+        service = responder.createService({
           name: nodeName,
+          type: MESH_SERVICE_TYPE,
+          port: port,
           txt: {
             node: nodeName,
             version: "1.0.0",
           },
         });
 
-        await mdnsServer.start();
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        logger.info(`📍 MESH DISCOVERY STARTED`);
-        logger.info(`   Node Name: ${nodeName}`);
-        logger.info(`   Local Host: ${localHost}`);
-        logger.info(`   Port: ${port}`);
-        logger.info(`   Service Type: ${MESH_SERVICE_TYPE}`);
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-
-        // Browse for other nodes
-        const browser = new Browser(MESH_SERVICE_TYPE);
-
-        browser.on("serviceUp", (service: any) => {
-          if (service.name === nodeName) return; // Skip self
-
-          const peer: PeerInfo = {
-            name: service.name,
-            host: service.host || service.addresses?.[0] || "unknown",
-            port: service.port,
-            lastSeen: Date.now(),
-          };
-
-          peers.set(peer.name, peer);
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          logger.info(`✅ PEER DISCOVERED`);
-          logger.info(`   Name: ${peer.name}`);
-          logger.info(`   Host: ${peer.host}`);
-          logger.info(`   Port: ${peer.port}`);
-          logger.info(`   Total Peers: ${peers.size}`);
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        });
-
-        browser.on("serviceDown", (service: any) => {
-          if (peers.has(service.name)) {
-            peers.delete(service.name);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            logger.info(`❌ PEER LEFT`);
-            logger.info(`   Name: ${service.name}`);
-            logger.info(`   Remaining Peers: ${peers.size}`);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          }
-        });
-
-        await browser.start();
+        await service.advertise();
+        logger.info(`Mesh discovery started: ${nodeName} at ${localHost}:${port} (${MESH_SERVICE_TYPE})`);
+        logger.info(`Note: Peer browsing via mDNS is not supported by @homebridge/ciao (advertiser-only). Manual peer config or P2P scanning needed.`);
       } catch (err) {
         logger.error(`Failed to start mDNS discovery: ${err}`);
         logger.warn("Mesh will run in standalone mode (no peer discovery)");
@@ -114,9 +70,9 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
     },
 
     async stop() {
-      if (mdnsServer) {
+      if (service) {
         try {
-          await mdnsServer.stop();
+          await service.end();
           logger.info("Mesh discovery stopped");
         } catch (err) {
           logger.error(`Error stopping discovery: ${err}`);
@@ -125,19 +81,17 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
     },
 
     async scan() {
-      // mDNS is continuous - this is just a heartbeat hook
-      // Clean up stale peers (not seen in 60s)
       const now = Date.now();
       let staleCount = 0;
       for (const [name, peer] of peers) {
         if (now - peer.lastSeen > 60000) {
           peers.delete(name);
           staleCount++;
-          logger.warn(`⏰ STALE PEER REMOVED: ${name} (last seen ${Math.floor((now - peer.lastSeen)/1000)}s ago)`);
+          logger.warn(`Stale peer removed: ${name} (last seen ${Math.floor((now - peer.lastSeen) / 1000)}s ago)`);
         }
       }
       if (staleCount > 0) {
-        logger.info(`🧹 Cleaned ${staleCount} stale peer(s), ${peers.size} remaining`);
+        logger.info(`Cleaned ${staleCount} stale peer(s), ${peers.size} remaining`);
       }
     },
 

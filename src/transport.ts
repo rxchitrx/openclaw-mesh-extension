@@ -1,4 +1,3 @@
-import type { PluginLogger } from "openclaw/plugin-sdk";
 import type { CRDTService } from "./crdt.js";
 import type { PeerInfo } from "./discovery.js";
 
@@ -6,12 +5,12 @@ export type TransportConfig = {
   nodeName: string;
   port: number;
   crdt: CRDTService;
-  logger: PluginLogger;
+  logger: any;
 };
 
 export type Connection = {
   peerName: string;
-  socket: WebSocket;
+  socket: any;
   isAlive: boolean;
 };
 
@@ -36,12 +35,10 @@ export function createTransport(config: TransportConfig): TransportService {
 
       switch (message.type) {
         case "delta":
-          // Incoming CRDT delta from peer
           crdt.applyRemoteDelta(message.delta, message.file);
           break;
 
-        case "sync_request":
-          // Peer wants our state
+        case "sync_request": {
           const state = crdt.getState(message.file);
           sendToPeer(peerName, {
             type: "sync_response",
@@ -49,9 +46,9 @@ export function createTransport(config: TransportConfig): TransportService {
             state,
           });
           break;
+        }
 
         case "sync_response":
-          // Peer sent their state
           crdt.mergeState(message.state, message.file);
           break;
 
@@ -66,7 +63,6 @@ export function createTransport(config: TransportConfig): TransportService {
   const sendToPeer = (peerName: string, message: any) => {
     const conn = connections.get(peerName);
     if (conn && conn.socket.readyState === 1) {
-      // OPEN
       conn.socket.send(JSON.stringify(message));
     }
   };
@@ -78,18 +74,13 @@ export function createTransport(config: TransportConfig): TransportService {
 
         server = new WebSocketServer({ port });
 
-        server.on("connection", (socket: WebSocket, req: any) => {
-          // Extract peer name from handshake
-          const peerName = req.headers["x-mesh-node"] || "unknown";
+        server.on("connection", (socket: any, req: any) => {
+          const peerName = (req.headers["x-mesh-node"] as string) || "unknown";
 
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          logger.info(`📥 INCOMING CONNECTION`);
-          logger.info(`   From: ${peerName}`);
-          logger.info(`   Total Connections: ${connections.size}`);
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          logger.info(`Incoming connection from: ${peerName}`);
 
           const conn: Connection = {
-            peerName: peerName as string,
+            peerName,
             socket,
             isAlive: true,
           };
@@ -102,24 +93,16 @@ export function createTransport(config: TransportConfig): TransportService {
 
           socket.on("close", () => {
             connections.delete(conn.peerName);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            logger.info(`📤 PEER DISCONNECTED`);
-            logger.info(`   Peer: ${conn.peerName}`);
-            logger.info(`   Remaining Connections: ${connections.size}`);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            logger.info(`Peer disconnected: ${conn.peerName} (${connections.size} remaining)`);
           });
 
-          socket.on("error", (err) => {
+          socket.on("error", (err: Error) => {
             logger.error(`Connection error with ${conn.peerName}: ${err}`);
             connections.delete(conn.peerName);
           });
         });
 
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        logger.info(`🌐 MESH TRANSPORT SERVER STARTED`);
-        logger.info(`   Port: ${port}`);
-        logger.info(`   Status: Listening for connections`);
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`Mesh transport server started on port ${port}`);
       } catch (err) {
         logger.error(`Failed to start transport server: ${err}`);
         throw err;
@@ -127,13 +110,11 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     async stop() {
-      // Close all connections
-      for (const [name, conn] of connections) {
+      for (const [, conn] of connections) {
         conn.socket.close();
       }
       connections.clear();
 
-      // Close server
       if (server) {
         await new Promise<void>((resolve) => {
           server.close(() => {
@@ -146,11 +127,12 @@ export function createTransport(config: TransportConfig): TransportService {
 
     async connectToPeer(peer: PeerInfo) {
       if (connections.has(peer.name)) {
-        return true; // Already connected
+        return true;
       }
 
       try {
-        const ws = new WebSocket(`ws://${peer.host}:${peer.port}`, {
+        const wsModule = await import("ws");
+        const ws = new wsModule.default(`ws://${peer.host}:${peer.port}`, {
           headers: {
             "x-mesh-node": nodeName,
           },
@@ -165,33 +147,23 @@ export function createTransport(config: TransportConfig): TransportService {
             };
 
             connections.set(peer.name, conn);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            logger.info(`✅ CONNECTED TO PEER`);
-            logger.info(`   Peer: ${peer.name}`);
-            logger.info(`   Address: ${peer.host}:${peer.port}`);
-            logger.info(`   Total Connections: ${connections.size}`);
-            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            logger.info(`Connected to peer: ${peer.name} at ${peer.host}:${peer.port}`);
             resolve();
           });
 
-          ws.on("error", (err) => {
+          ws.on("error", (err: Error) => {
             logger.error(`Failed to connect to ${peer.name}: ${err}`);
             reject(err);
           });
         });
 
-        // Set up message handling
         ws.on("message", (data: Buffer) => {
           handleMessage(peer.name, data.toString());
         });
 
         ws.on("close", () => {
           connections.delete(peer.name);
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          logger.info(`❌ DISCONNECTED FROM PEER`);
-          logger.info(`   Peer: ${peer.name}`);
-          logger.info(`   Remaining Connections: ${connections.size}`);
-          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          logger.info(`Disconnected from peer: ${peer.name} (${connections.size} remaining)`);
         });
 
         return true;
@@ -204,9 +176,8 @@ export function createTransport(config: TransportConfig): TransportService {
     broadcast(message: any) {
       const data = JSON.stringify(message);
 
-      for (const [name, conn] of connections) {
+      for (const [, conn] of connections) {
         if (conn.socket.readyState === 1) {
-          // OPEN
           conn.socket.send(data);
         }
       }
@@ -219,10 +190,8 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     async maintainConnections() {
-      // This is called on heartbeat - check for dead connections
       for (const [name, conn] of connections) {
         if (conn.socket.readyState === 3) {
-          // CLOSED
           connections.delete(name);
           logger.info(`Removed dead connection: ${name}`);
         }

@@ -1,7 +1,17 @@
 {
-  "extends": "../tsconfig.package-boundary.base.json",
   "compilerOptions": {
-    "rootDir": "."
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": ".",
+    "declaration": true,
+    "strict": false,
+    "noEmitOnError": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["./*.ts", "./src/**/*.ts"],
   "exclude": ["./**/*.test.ts", "./dist/**", "./node_modules/**"]

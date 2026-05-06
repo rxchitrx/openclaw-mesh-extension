@@ -1,67 +1,61 @@
-import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk";
 import type { CRDTService } from "../crdt.js";
 
-export function createMeshSyncTool(crdt: CRDTService, ctx: OpenClawPluginToolContext) {
+export function createMeshSyncTool(crdt: CRDTService, _ctx: any) {
   return {
+    label: "Mesh Sync",
     name: "mesh_sync",
     description: "Request sync from all connected mesh peers",
     parameters: {
-      type: "object",
+      type: "object" as const,
       properties: {
         file: {
           type: "string",
           description: "Specific file to sync (optional, syncs all files if not specified)",
         },
       },
-      required: [],
+      required: [] as string[],
     },
-    execute: async (params: { file?: string }) => {
-      const files = params.file ? [params.file] : crdt.getFiles();
+    execute: async (_toolCallId: string, toolParams: { file?: string }, _signal: any, _onUpdate: any) => {
+      const file = toolParams?.file;
+      const files = file ? [file] : crdt.getFiles();
       const now = new Date().toISOString();
-      
-      let message = `🔄 MESH SYNC REQUEST\n`;
-      message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-      message += `⏰ Timestamp: ${now}\n\n`;
-      
+
+      let message = `MESH SYNC REQUEST\n`;
+      message += `Timestamp: ${now}\n\n`;
+
       if (files.length === 0) {
-        if (params.file) {
-          message += `⚠️ FILE NOT FOUND\n`;
-          message += `   Requested: ${params.file}\n`;
-          message += `   Status: Not in local CRDT\n\n`;
-          message += `💡 TIP: File must exist in workspace to sync.`;
+        if (file) {
+          message += `File not found: ${file}\n`;
+          message += `File must exist in workspace CRDT to sync.\n`;
         } else {
-          message += `📭 NO FILES TO SYNC\n`;
-          message += `   Local CRDT is empty.\n\n`;
-          message += `💡 TIP: Create files in workspace to start syncing.`;
+          message += `No files to sync. Local CRDT is empty.\n`;
+          message += `Create files in workspace to start syncing.\n`;
         }
       } else {
-        message += `📤 SYNC REQUEST\n`;
-        message += `   Mode: ${params.file ? 'SINGLE FILE' : 'ALL FILES'}\n`;
-        message += `   Files to sync: ${files.length}\n\n`;
-        
-        message += `📄 FILES:\n`;
+        message += `SYNC REQUEST\n`;
+        message += `  Mode: ${file ? "SINGLE FILE" : "ALL FILES"}\n`;
+        message += `  Files to sync: ${files.length}\n\n`;
+
+        message += `FILES:\n`;
         for (const f of files) {
           const content = crdt.getFileContent(f);
-          const contentPreview = content ? content.substring(0, 50) + '...' : '(empty)';
-          message += `   📝 ${f}\n`;
-          message += `      Preview: ${contentPreview}\n`;
+          const preview = content ? content.substring(0, 50) + "..." : "(empty)";
+          message += `  ${f}: ${preview}\n`;
         }
-        
-        message += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-        message += `📥 SYNC STATUS\n`;
-        message += `   Request: Sent to transport layer\n`;
-        message += `   Action: Will request state from all connected peers\n`;
-        message += `   Timing: Next heartbeat cycle\n\n`;
-        message += `💡 Remote changes will be merged automatically on receipt.`;
+
+        message += `\nSYNC STATUS\n`;
+        message += `  Request sent to transport layer\n`;
+        message += `  Will request state from all connected peers on next heartbeat cycle\n`;
+        message += `  Remote changes will be merged automatically on receipt.\n`;
       }
-      
-      message += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-      
+
       return {
-        ok: true,
-        message,
-        files,
-        timestamp: now,
+        content: [{ type: "text" as const, text: message }],
+        details: {
+          ok: true,
+          files,
+          timestamp: now,
+        },
       };
     },
   };

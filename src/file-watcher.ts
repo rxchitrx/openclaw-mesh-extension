@@ -1,12 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { PluginLogger } from "openclaw/plugin-sdk";
 import type { CRDTService } from "./crdt.js";
 
 export type FileWatcherConfig = {
   workspaceDir: string;
   crdt: CRDTService;
-  logger: PluginLogger;
+  logger: any;
 };
 
 export type FileWatcherService = {
@@ -16,29 +15,12 @@ export type FileWatcherService = {
   syncAllFiles: () => Promise<void>;
 };
 
-// Ignored patterns
 const IGNORE_PATTERNS = [/node_modules/, /\.git/, /dist/, /\.DS_Store/, /Thumbs\.db/];
 
 const TEXT_EXTENSIONS = [
-  ".md",
-  ".txt",
-  ".json",
-  ".ts",
-  ".js",
-  ".tsx",
-  ".jsx",
-  ".yml",
-  ".yaml",
-  ".toml",
-  ".ini",
-  ".env",
-  ".html",
-  ".css",
-  ".scss",
-  ".xml",
-  ".sh",
-  ".bash",
-  ".zsh",
+  ".md", ".txt", ".json", ".ts", ".js", ".tsx", ".jsx",
+  ".yml", ".yaml", ".toml", ".ini", ".env",
+  ".html", ".css", ".scss", ".xml", ".sh", ".bash", ".zsh",
 ];
 
 export function createFileWatcher(config: FileWatcherConfig): FileWatcherService {
@@ -49,14 +31,12 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
   let watcher: fs.FSWatcher | null = null;
 
   const shouldWatch = (filePath: string): boolean => {
-    // Check ignore patterns
     for (const pattern of IGNORE_PATTERNS) {
       if (pattern.test(filePath)) {
         return false;
       }
     }
 
-    // Only watch text files
     const ext = path.extname(filePath).toLowerCase();
     return TEXT_EXTENSIONS.includes(ext);
   };
@@ -79,36 +59,24 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
     if (content === null) return;
 
-    // Check if content actually changed
     const prevContent = fileContents.get(relativePath);
     if (prevContent === content) return;
 
-    // Apply to CRDT
-    const delta = crdt.applyLocalChange(relativePath, content);
+    const delta = await crdt.applyLocalChange(relativePath, content);
 
     if (delta) {
       fileContents.set(relativePath, content);
       watchedFiles.add(relativePath);
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      logger.info(`📄 FILE SYNCED`);
-      logger.info(`   Path: ${relativePath}`);
-      logger.info(`   Size: ${content.length} chars`);
-      logger.info(`   Watched: ${watchedFiles.size} files`);
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
     }
   };
 
   return {
     async start() {
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      logger.info(`👁️ MESH FILE WATCHER STARTING`);
-      logger.info(`   Workspace: ${workspaceDir}`);
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      
-      // Initial scan
+      logger.info(`Mesh file watcher starting: ${workspaceDir}`);
+
       await this.syncAllFiles();
 
-      // Set up watcher
       watcher = fs.watch(workspaceDir, { recursive: true }, async (event, filename) => {
         if (!filename) return;
 
@@ -123,10 +91,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
         logger.error(`File watcher error: ${err}`);
       });
 
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      logger.info(`✅ FILE WATCHER STARTED`);
-      logger.info(`   Watching: ${watchedFiles.size} files`);
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`File watcher started: ${watchedFiles.size} files`);
     },
 
     async stop() {

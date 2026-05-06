@@ -1,8 +1,6 @@
-import type { PluginLogger } from "openclaw/plugin-sdk";
-
 export type CRDTConfig = {
   nodeName: string;
-  logger: PluginLogger;
+  logger: any;
 };
 
 export type FileState = {
@@ -21,7 +19,7 @@ export type Delta = {
 
 export type CRDTService = {
   getState: (file?: string) => any;
-  applyLocalChange: (file: string, content: string) => Delta | null;
+  applyLocalChange: (file: string, content: string) => Promise<Delta | null>;
   applyRemoteDelta: (delta: Delta, file: string) => void;
   mergeState: (state: any, file: string) => void;
   getFileContent: (file: string) => string | null;
@@ -33,17 +31,13 @@ export type CRDTService = {
 export function createCRDT(config: CRDTConfig): CRDTService {
   const { nodeName, logger } = config;
 
-  // Y.Doc for each file
   const docs = new Map<string, any>();
   const pendingDeltas: Delta[] = [];
 
-  const getOrCreateDoc = (file: string): any => {
+  const getOrCreateDoc = async (file: string): Promise<any> => {
     if (!docs.has(file)) {
-      // Lazy import Yjs
-      const Y = require("yjs");
+      const Y = await import("yjs");
       const doc = new Y.Doc();
-
-      // Get the text type for this document
       const text = doc.getText("content");
 
       docs.set(file, { doc, text });
@@ -54,9 +48,9 @@ export function createCRDT(config: CRDTConfig): CRDTService {
   };
 
   return {
-    getState(file?: string) {
+    async getState(file?: string) {
       if (file) {
-        const docData = getOrCreateDoc(file);
+        const docData = await getOrCreateDoc(file);
         return {
           file,
           content: docData.text.toString(),
@@ -64,7 +58,6 @@ export function createCRDT(config: CRDTConfig): CRDTService {
         };
       }
 
-      // Return all files
       const state: Record<string, any> = {};
       for (const [path, docData] of docs) {
         state[path] = {
@@ -75,20 +68,17 @@ export function createCRDT(config: CRDTConfig): CRDTService {
       return state;
     },
 
-    applyLocalChange(file: string, content: string): Delta | null {
+    async applyLocalChange(file: string, content: string): Promise<Delta | null> {
       try {
-        const docData = getOrCreateDoc(file);
+        const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
-        // Get current content
         const currentContent = text.toString();
 
         if (currentContent === content) {
-          return null; // No change
+          return null;
         }
 
-        // Simple approach: replace entire content
-        // TODO: Use diff algorithm for better delta
         doc.transact(() => {
           text.delete(0, text.length);
           text.insert(0, content);
@@ -102,12 +92,7 @@ export function createCRDT(config: CRDTConfig): CRDTService {
         };
 
         pendingDeltas.push(delta);
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        logger.info(`📝 LOCAL FILE CHANGE DETECTED`);
-        logger.info(`   File: ${file}`);
-        logger.info(`   Size: ${content.length} chars`);
-        logger.info(`   Pending Deltas: ${pendingDeltas.length}`);
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`Local file change: ${file} (${content.length} chars, ${pendingDeltas.length} pending deltas)`);
         return delta;
       } catch (err) {
         logger.error(`Failed to apply change to ${file}: ${err}`);
@@ -115,36 +100,29 @@ export function createCRDT(config: CRDTConfig): CRDTService {
       }
     },
 
-    applyRemoteDelta(delta: Delta, file: string) {
+    async applyRemoteDelta(delta: Delta, file: string) {
       try {
-        const docData = getOrCreateDoc(file);
+        const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
-        // Apply the delta
         doc.transact(() => {
           for (const change of delta.changes) {
             if (change.type === "replace") {
               text.delete(0, text.length);
               text.insert(0, change.content);
             }
-            // TODO: Handle more granular changes
           }
         });
 
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        logger.info(`📥 REMOTE DELTA APPLIED`);
-        logger.info(`   File: ${file}`);
-        logger.info(`   From: ${delta.author}`);
-        logger.info(`   Changes: ${delta.changes.length}`);
-        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`Remote delta applied: ${file} from ${delta.author}`);
       } catch (err) {
         logger.error(`Failed to apply remote delta: ${err}`);
       }
     },
 
-    mergeState(state: any, file: string) {
+    async mergeState(state: any, file: string) {
       try {
-        const docData = getOrCreateDoc(file);
+        const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
         if (state.content !== undefined) {
@@ -174,9 +152,6 @@ export function createCRDT(config: CRDTConfig): CRDTService {
     },
 
     async syncPendingDeltas() {
-      // This is called on heartbeat
-      // The transport service will broadcast these
-      // For now, just clean up old deltas (older than 5 min)
       const now = Date.now();
       const cutoff = 5 * 60 * 1000;
 

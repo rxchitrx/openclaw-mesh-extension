@@ -1,5 +1,18 @@
 {
   "id": "mesh",
+  "name": "OpenClaw Mesh",
+  "description": "P2P distributed file sync between OpenClaw nodes via mDNS discovery and WebSocket connections",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "mesh_discover",
+      "mesh_status",
+      "mesh_broadcast",
+      "mesh_sync"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
