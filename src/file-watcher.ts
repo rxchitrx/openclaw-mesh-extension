@@ -89,14 +89,22 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     if (delta) {
       fileContents.set(relativePath, content);
       watchedFiles.add(relativePath);
-      logger.info(`Synced change: ${relativePath}`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`📄 FILE SYNCED`);
+      logger.info(`   Path: ${relativePath}`);
+      logger.info(`   Size: ${content.length} chars`);
+      logger.info(`   Watched: ${watchedFiles.size} files`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     }
   };
 
   return {
     async start() {
-      logger.info(`Starting file watcher for: ${workspaceDir}`);
-
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`👁️ MESH FILE WATCHER STARTING`);
+      logger.info(`   Workspace: ${workspaceDir}`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      
       // Initial scan
       await this.syncAllFiles();
 
@@ -115,7 +123,10 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
         logger.error(`File watcher error: ${err}`);
       });
 
-      logger.info(`File watcher started, watching ${watchedFiles.size} files`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`✅ FILE WATCHER STARTED`);
+      logger.info(`   Watching: ${watchedFiles.size} files`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     },
 
     async stop() {

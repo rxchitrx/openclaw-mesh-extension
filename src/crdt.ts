@@ -102,8 +102,12 @@ export function createCRDT(config: CRDTConfig): CRDTService {
         };
 
         pendingDeltas.push(delta);
-        logger.debug(`Applied local change to: ${file}`);
-
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`📝 LOCAL FILE CHANGE DETECTED`);
+        logger.info(`   File: ${file}`);
+        logger.info(`   Size: ${content.length} chars`);
+        logger.info(`   Pending Deltas: ${pendingDeltas.length}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         return delta;
       } catch (err) {
         logger.error(`Failed to apply change to ${file}: ${err}`);
@@ -127,7 +131,12 @@ export function createCRDT(config: CRDTConfig): CRDTService {
           }
         });
 
-        logger.info(`Applied remote delta to ${file} from ${delta.author}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`📥 REMOTE DELTA APPLIED`);
+        logger.info(`   File: ${file}`);
+        logger.info(`   From: ${delta.author}`);
+        logger.info(`   Changes: ${delta.changes.length}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       } catch (err) {
         logger.error(`Failed to apply remote delta: ${err}`);
       }

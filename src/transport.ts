@@ -82,7 +82,11 @@ export function createTransport(config: TransportConfig): TransportService {
           // Extract peer name from handshake
           const peerName = req.headers["x-mesh-node"] || "unknown";
 
-          logger.info(`Incoming connection from: ${peerName}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          logger.info(`📥 INCOMING CONNECTION`);
+          logger.info(`   From: ${peerName}`);
+          logger.info(`   Total Connections: ${connections.size}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
           const conn: Connection = {
             peerName: peerName as string,
@@ -98,7 +102,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
           socket.on("close", () => {
             connections.delete(conn.peerName);
-            logger.info(`Peer disconnected: ${conn.peerName}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            logger.info(`📤 PEER DISCONNECTED`);
+            logger.info(`   Peer: ${conn.peerName}`);
+            logger.info(`   Remaining Connections: ${connections.size}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
           });
 
           socket.on("error", (err) => {
@@ -107,7 +115,11 @@ export function createTransport(config: TransportConfig): TransportService {
           });
         });
 
-        logger.info(`Transport server listening on port ${port}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`🌐 MESH TRANSPORT SERVER STARTED`);
+        logger.info(`   Port: ${port}`);
+        logger.info(`   Status: Listening for connections`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       } catch (err) {
         logger.error(`Failed to start transport server: ${err}`);
         throw err;
@@ -153,7 +165,12 @@ export function createTransport(config: TransportConfig): TransportService {
             };
 
             connections.set(peer.name, conn);
-            logger.info(`Connected to peer: ${peer.name}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            logger.info(`✅ CONNECTED TO PEER`);
+            logger.info(`   Peer: ${peer.name}`);
+            logger.info(`   Address: ${peer.host}:${peer.port}`);
+            logger.info(`   Total Connections: ${connections.size}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
             resolve();
           });
 
@@ -170,7 +187,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
         ws.on("close", () => {
           connections.delete(peer.name);
-          logger.info(`Disconnected from peer: ${peer.name}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          logger.info(`❌ DISCONNECTED FROM PEER`);
+          logger.info(`   Peer: ${peer.name}`);
+          logger.info(`   Remaining Connections: ${connections.size}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         });
 
         return true;

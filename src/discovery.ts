@@ -64,7 +64,13 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         });
 
         await mdnsServer.start();
-        logger.info(`Mesh discovery started: ${nodeName} at ${localHost}:${port}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        logger.info(`📍 MESH DISCOVERY STARTED`);
+        logger.info(`   Node Name: ${nodeName}`);
+        logger.info(`   Local Host: ${localHost}`);
+        logger.info(`   Port: ${port}`);
+        logger.info(`   Service Type: ${MESH_SERVICE_TYPE}`);
+        logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
         // Browse for other nodes
         const browser = new Browser(MESH_SERVICE_TYPE);
@@ -80,13 +86,23 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
           };
 
           peers.set(peer.name, peer);
-          logger.info(`Discovered peer: ${peer.name} at ${peer.host}:${peer.port}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          logger.info(`✅ PEER DISCOVERED`);
+          logger.info(`   Name: ${peer.name}`);
+          logger.info(`   Host: ${peer.host}`);
+          logger.info(`   Port: ${peer.port}`);
+          logger.info(`   Total Peers: ${peers.size}`);
+          logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         });
 
         browser.on("serviceDown", (service: any) => {
           if (peers.has(service.name)) {
             peers.delete(service.name);
-            logger.info(`Peer left: ${service.name}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            logger.info(`❌ PEER LEFT`);
+            logger.info(`   Name: ${service.name}`);
+            logger.info(`   Remaining Peers: ${peers.size}`);
+            logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
           }
         });
 
@@ -112,11 +128,16 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
       // mDNS is continuous - this is just a heartbeat hook
       // Clean up stale peers (not seen in 60s)
       const now = Date.now();
+      let staleCount = 0;
       for (const [name, peer] of peers) {
         if (now - peer.lastSeen > 60000) {
           peers.delete(name);
-          logger.info(`Removed stale peer: ${name}`);
+          staleCount++;
+          logger.warn(`⏰ STALE PEER REMOVED: ${name} (last seen ${Math.floor((now - peer.lastSeen)/1000)}s ago)`);
         }
+      }
+      if (staleCount > 0) {
+        logger.info(`🧹 Cleaned ${staleCount} stale peer(s), ${peers.size} remaining`);
       }
     },
 

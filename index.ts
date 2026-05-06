@@ -38,9 +38,10 @@ const meshPlugin = {
   },
   register(api: OpenClawPluginApi) {
     const config = (api.pluginConfig as MeshConfig) || {};
+    const logger = api.logger;
 
     if (config.enabled === false) {
-      api.logger.info("Mesh extension disabled, skipping registration");
+      logger.info("Mesh extension disabled, skipping registration");
       return;
     }
 
@@ -87,15 +88,29 @@ const meshPlugin = {
     // Start services on gateway start
     api.on("gateway_start", async () => {
       try {
-        api.logger.info("Starting mesh services...");
-
+        logger.info(``);
+        logger.info(`╔════════════════════════════════════════════════════════════╗`);
+        logger.info(`║               🦞 OPENCLAW MESH EXTENSION                    ║`);
+        logger.info(`╚════════════════════════════════════════════════════════════╝`);
+        logger.info(``);
+        logger.info(`Starting mesh services...`);
+        logger.info(`   Node Name: ${nodeName}`);
+        logger.info(`   Port: ${port}`);
+        logger.info(`   Workspace: ${workspaceDir}`);
+        logger.info(``);
+        
         await discovery.start();
         await transport.start();
         await fileWatcher.start();
-
-        api.logger.info("Mesh services started successfully");
+        
+        logger.info(``);
+        logger.info(`╔════════════════════════════════════════════════════════════╗`);
+        logger.info(`║           ✅ MESH SERVICES STARTED SUCCESSFULLY              ║`);
+        logger.info(`╚════════════════════════════════════════════════════════════╝`);
+        logger.info(``);
       } catch (err) {
-        api.logger.error(`Failed to start mesh services: ${err}`);
+        logger.error(`❌ FAILED TO START MESH SERVICES: ${err}`);
+        logger.error(`   Extension will continue but mesh features may not work`);
       }
     });
 
@@ -113,17 +128,23 @@ const meshPlugin = {
 
     // Hook into heartbeat for periodic sync
     api.on("heartbeat_prompt_contribution", async () => {
+      const peers = discovery.getPeers();
+      const connections = transport.getConnections();
+      const pendingDeltas = crdt.getPendingDeltas();
+      
+      logger.debug(`💓 HEARTBEAT: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas`);
+      
       try {
         // Scan for new peers
         await discovery.scan();
-
+        
         // Reconnect to any lost peers
         await transport.maintainConnections();
-
+        
         // Sync pending deltas
         await crdt.syncPendingDeltas();
       } catch (err) {
-        api.logger.warn(`Mesh heartbeat error: ${err}`);
+        logger.warn(`⚠️ HEARTBEAT ERROR: ${err}`);
       }
     });
 

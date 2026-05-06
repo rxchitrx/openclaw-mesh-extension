@@ -7,6 +7,7 @@ P2P distributed file sync between OpenClaw nodes. No cloud server required.
 Turns multiple OpenClaw instances into a distributed system that syncs files automatically over local WiFi.
 
 **Features:**
+
 - mDNS peer discovery (zero-config, like AirPrint/Bonjour)
 - WebSocket P2P connections
 - Yjs CRDT for conflict-free merging
@@ -16,57 +17,29 @@ Turns multiple OpenClaw instances into a distributed system that syncs files aut
 ## Prerequisites
 
 - Node.js >= 22
-- OpenClaw installed globally (`npm install -g openclaw` or `pnpm add -g openclaw`)
+- OpenClaw installed globally (`npm install -g openclaw`)
 - Two machines on the same WiFi network
 
 ## Installation
 
-### Step 1: Find Your OpenClaw Installation
-
-Run this command to discover where OpenClaw is installed:
+### Step 1: Locate OpenClaw Installation
 
 ```bash
-# Find the openclaw binary
+# Find where OpenClaw is installed
 which openclaw
-# or
-where openclaw    # Windows PowerShell
-```
 
-Then find the installation directory:
-
-```bash
-# macOS/Linux
-ls -la $(dirname $(dirname $(which openclaw)))/lib/node_modules/openclaw
-
-# Windows (PowerShell)
-Get-ChildItem (Split-Path (Split-Path (Get-Command openclaw).Source) -Parent) -ChildPath "node_modules\openclaw"
-```
-
-**Common locations:**
-
-| Platform | Typical Path |
-|----------|--------------|
-| macOS (Homebrew) | `/opt/homebrew/lib/node_modules/openclaw` |
-| macOS (default npm) | `/usr/local/lib/node_modules/openclaw` |
-| Linux (npm) | `/usr/lib/node_modules/openclaw` |
-| Linux (nvm) | `~/.nvm/versions/node/<version>/lib/node_modules/openclaw` |
-| Windows (npm) | `C:\Users\<user>\AppData\Roaming\npm\node_modules\openclaw` |
-| Windows (pnpm) | `C:\Users\<user>\AppData\Local\pnpm\global\<version>\node_modules\openclaw` |
-
-**The key is to find the `extensions` folder inside the OpenClaw installation.**
-
-You can verify you found the right place:
-
-```bash
-# Should list other extensions like discord, telegram, whatsapp
-ls <openclaw-install-path>/extensions/
+# Usually one of these locations:
+# macOS (Homebrew): /opt/homebrew/lib/node_modules/openclaw
+# macOS (default): /usr/local/lib/node_modules/openclaw
+# Linux: /usr/lib/node_modules/openclaw
+# Windows: C:\Users\<user>\AppData\Roaming\npm\node_modules\openclaw
 ```
 
 ### Step 2: Clone the Extension
 
 ```bash
-# Navigate to the extensions folder you found in Step 1
-cd <openclaw-install-path>/extensions
+# Navigate to OpenClaw extensions folder
+cd /opt/homebrew/lib/node_modules/openclaw/extensions
 
 # Clone this repo as "mesh"
 git clone https://github.com/rxchitrx/openclaw-mesh-extension.git mesh
@@ -78,19 +51,18 @@ cd mesh
 ### Step 3: Install Dependencies
 
 ```bash
-# From the mesh folder (where you are now)
+# From the mesh folder
 pnpm install
 
 # If pnpm is not installed:
-npm install -g pnpm
-# then run pnpm install
+# npm install -g pnpm
 ```
 
 ### Step 4: Rebuild OpenClaw
 
 ```bash
-# Go back to OpenClaw root (the folder you found in Step 1)
-cd <openclaw-install-path>
+# Go back to OpenClaw root
+cd /opt/homebrew/lib/node_modules/openclaw
 
 # Rebuild to include the new extension
 pnpm build
@@ -99,46 +71,11 @@ pnpm build
 ### Step 5: Restart OpenClaw Gateway
 
 ```bash
-# Stop the running gateway (if any)
+# Stop the running gateway
 openclaw gateway stop
 
 # Start it again
 openclaw gateway start
-```
-
-## Quick Install Script
-
-If you're comfortable with shell scripts, here's a quick installer:
-
-```bash
-#!/bin/bash
-# Run this after installing OpenClaw globally
-
-# Find OpenClaw installation
-OPENCLAW_PATH=$(dirname $(dirname $(which openclaw)))/lib/node_modules/openclaw
-
-if [ ! -d "$OPENCLAW_PATH" ]; then
-  echo "Could not find OpenClaw installation"
-  echo "Please install with: npm install -g openclaw"
-  exit 1
-fi
-
-echo "Found OpenClaw at: $OPENCLAW_PATH"
-
-# Clone extension
-cd "$OPENCLAW_PATH/extensions"
-git clone https://github.com/rxchitrx/openclaw-mesh-extension.git mesh
-
-# Install dependencies
-cd mesh
-pnpm install
-
-# Rebuild OpenClaw
-cd "$OPENCLAW_PATH"
-pnpm build
-
-echo "Mesh extension installed!"
-echo "Restart your gateway: openclaw gateway stop && openclaw gateway start"
 ```
 
 ## Verification
@@ -151,6 +88,7 @@ openclaw agent --message "mesh_status"
 ```
 
 Expected response:
+
 ```
 📍 Local Node: node-<pid>
 🌐 Address: <local-ip>:18790
@@ -159,21 +97,16 @@ Expected response:
 ...
 ```
 
-If you see an error or "unknown tool", the extension didn't load. Check:
-1. Is the `mesh` folder in the right `extensions/` directory?
-2. Did you run `pnpm build` from the OpenClaw root?
-3. Did you restart the gateway?
-
 ## Usage
 
 ### Tools Available
 
-| Tool | Description |
-|------|-------------|
-| `mesh_discover` | List all nodes visible on the mesh |
-| `mesh_status` | Show local mesh state (connections, files, pending deltas) |
-| `mesh_broadcast` | Force push local changes to all peers |
-| `mesh_sync` | Pull and merge remote changes from peers |
+| Tool             | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `mesh_discover`  | List all nodes visible on the mesh                         |
+| `mesh_status`    | Show local mesh state (connections, files, pending deltas) |
+| `mesh_broadcast` | Force push local changes to all peers                      |
+| `mesh_sync`      | Pull and merge remote changes from peers                   |
 
 ### Example Commands
 
@@ -270,131 +203,81 @@ Add to your `~/.openclaw/openclaw.json`:
 
 ### Config Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable the mesh |
-| `nodeName` | string | `node-<pid>` | Unique name for this node |
-| `port` | number | `18790` | Port for P2P connections |
-| `workspaceDir` | string | OpenClaw workspace | Directory to sync |
+| Option         | Type    | Default            | Description               |
+| -------------- | ------- | ------------------ | ------------------------- |
+| `enabled`      | boolean | `true`             | Enable/disable the mesh   |
+| `nodeName`     | string  | `node-<pid>`       | Unique name for this node |
+| `port`         | number  | `18790`            | Port for P2P connections  |
+| `workspaceDir` | string  | OpenClaw workspace | Directory to sync         |
 
-## Demo Setup (2 Machines)
+## Demo Setup (2 Laptops)
 
-### On Both Machines
+### On Both Laptops
 
-1. Install OpenClaw globally: `npm install -g openclaw`
+1. Install OpenClaw: `npm install -g openclaw`
 2. Install mesh extension (see Installation above)
-3. Note your local IP:
-   ```bash
-   # macOS/Linux
-   ifconfig | grep "inet " | grep -v 127.0.0.1
-   
-   # Windows
-   ipconfig | findstr IPv4
-   ```
+3. Note your local IP: `ifconfig | grep "inet " | grep -v 127.0.0.1`
 
-### Machine A
+### Laptop A
 
 ```bash
 # Start OpenClaw
 openclaw gateway start
 
 # Create a test file
-echo "Hello from Machine A" > ~/.openclaw/workspace/mesh-test.md
+echo "Hello from Laptop A" > ~/.openclaw/workspace/mesh-test.md
 
 # Check status
 openclaw agent --message "mesh_status"
 ```
 
-### Machine B
+### Laptop B
 
 ```bash
 # Start OpenClaw
 openclaw gateway start
 
-# Check for Machine A
+# Check for Laptop A
 openclaw agent --message "mesh_discover"
 
-# Should show Machine A in the peer list
+# Should show Laptop A in the peer list
 ```
 
 ### Verify Sync
 
 ```bash
-# On Machine B, check if the file synced
+# On Laptop B, check if the file synced
 openclaw agent --message "mesh_status"
 
-# Check the file content
-cat ~/.openclaw/workspace/mesh-test.md
+# Should show synced files
 ```
 
 ## Troubleshooting
 
-### "Cannot find OpenClaw installation"
-
-OpenClaw must be installed globally first:
-
-```bash
-# Using npm
-npm install -g openclaw
-
-# Using pnpm
-pnpm add -g openclaw
-```
-
-Verify installation:
-
-```bash
-openclaw --version
-```
-
-### "pnpm: command not found"
-
-Install pnpm first:
-
-```bash
-npm install -g pnpm
-```
-
 ### Extension Not Loading
 
-1. **Check extension location:**
-   ```bash
-   ls <openclaw-path>/extensions/mesh
-   # Should show: index.ts, package.json, openclaw.plugin.json, src/, README.md
-   ```
+```bash
+# Check if extension is in the right place
+ls /opt/homebrew/lib/node_modules/openclaw/extensions/mesh
 
-2. **Check if it was bundled:**
-   ```bash
-   ls <openclaw-path>/dist/extensions/mesh
-   # Should show: index.js, package.json, openclaw.plugin.json
-   ```
+# Should see: index.ts, package.json, openclaw.plugin.json, src/
 
-3. **Did you rebuild?**
-   ```bash
-   cd <openclaw-path>
-   pnpm build
-   ```
+# Check if it was bundled
+ls /opt/homebrew/lib/node_modules/openclaw/dist/extensions/mesh
 
-4. **Did you restart the gateway?**
-   ```bash
-   openclaw gateway stop
-   openclaw gateway start
-   ```
+# Should see: index.js, package.json, openclaw.plugin.json
+```
 
 ### No Peers Discovered
 
-1. **Same WiFi?** Both machines must be on the same network
-2. **Firewall?** Check if incoming connections are blocked
-   - **macOS:** System Settings → Privacy & Security → Local Network → Allow Node/OpenClaw
-   - **Linux:** Check `ufw` or `firewalld`
-   - **Windows:** Windows Defender Firewall → Allow Node.js
+1. **Same WiFi?** Both laptops must be on the same network
+2. **Firewall?** macOS may block incoming connections
+   - System Settings → Privacy & Security → Local Network
+   - Allow OpenClaw/Node
 3. **mDNS working?** Test with:
    ```bash
-   # macOS/Linux
+   # Should show other machines
    dns-sd -B _openclaw-mesh._tcp
-   
-   # Linux (avahi)
-   avahi-browse -at | grep openclaw
    ```
 
 ### Tools Not Available
@@ -403,44 +286,33 @@ npm install -g pnpm
 # Check if mesh extension loaded
 openclaw agent --message "What tools do you have?"
 
-# Look for mesh_discover, mesh_status, mesh_broadcast, mesh_sync in the response
+# Look for mesh_discover, mesh_status, mesh_broadcast, mesh_sync
 ```
 
 ### Build Errors
 
 ```bash
 # Clean and rebuild
-cd <openclaw-path>
+cd /opt/homebrew/lib/node_modules/openclaw
 rm -rf node_modules/.cache dist
 pnpm install
 pnpm build
-```
-
-### Permission Errors
-
-On macOS/Linux, you might need `sudo` if OpenClaw was installed with sudo:
-
-```bash
-sudo git clone https://github.com/rxchitrx/openclaw-mesh-extension.git <openclaw-path>/extensions/mesh
-cd <openclaw-path>/extensions/mesh
-sudo pnpm install
-cd <openclaw-path>
-sudo pnpm build
 ```
 
 ## Technical Details
 
 ### Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `yjs` | CRDT implementation for conflict-free merging |
-| `@homebridge/ciao` | mDNS/Bonjour for peer discovery |
-| `ws` | WebSocket for P2P connections |
+| Package            | Purpose                                       |
+| ------------------ | --------------------------------------------- |
+| `yjs`              | CRDT implementation for conflict-free merging |
+| `@homebridge/ciao` | mDNS/Bonjour for peer discovery               |
+| `ws`               | WebSocket for P2P connections                 |
 
 ### File Types Synced
 
 Text files only (for now):
+
 - `.md`, `.txt`, `.json`
 - `.ts`, `.js`, `.tsx`, `.jsx`
 - `.yml`, `.yaml`, `.toml`
@@ -448,6 +320,7 @@ Text files only (for now):
 - `.sh`, `.bash`, `.zsh`
 
 Ignored:
+
 - `node_modules/`
 - `.git/`
 - `dist/`
@@ -455,20 +328,20 @@ Ignored:
 
 ### Port Usage
 
-| Port | Service |
-|------|---------|
-| 18789 | OpenClaw Gateway (default) |
+| Port  | Service                           |
+| ----- | --------------------------------- |
+| 18789 | OpenClaw Gateway (default)        |
 | 18790 | Mesh P2P WebSocket (configurable) |
 
 ### Hook Integration
 
 The extension registers these OpenClaw hooks:
 
-| Hook | Purpose |
-|------|---------|
-| `gateway_start` | Start discovery, transport, file watcher |
-| `gateway_stop` | Clean shutdown of all services |
-| `heartbeat_prompt_contribution` | Periodic peer scan and sync |
+| Hook                            | Purpose                                  |
+| ------------------------------- | ---------------------------------------- |
+| `gateway_start`                 | Start discovery, transport, file watcher |
+| `gateway_stop`                  | Clean shutdown of all services           |
+| `heartbeat_prompt_contribution` | Periodic peer scan and sync              |
 
 ## Limitations (Current)
 
@@ -503,26 +376,31 @@ extensions/mesh/
 ### Key Files
 
 **`index.ts`** - Main plugin registration
+
 - Creates all services
 - Registers tools with OpenClaw
 - Hooks into gateway lifecycle
 
 **`discovery.ts`** - Peer discovery
+
 - Advertises self via mDNS
 - Listens for other nodes
 - Maintains peer list
 
 **`transport.ts`** - P2P connections
+
 - WebSocket server for incoming connections
 - WebSocket client for outgoing connections
 - Message routing (deltas, sync requests)
 
 **`crdt.ts`** - Conflict-free sync
+
 - Yjs document per file
 - Applies local changes
 - Merges remote deltas
 
 **`file-watcher.ts`** - File monitoring
+
 - Watches workspace directory
 - Detects changes
 - Triggers CRDT updates
