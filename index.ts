@@ -1,0 +1,107 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { createCRDT, type CRDTService } from "./src/crdt.js";
+import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
+import { createFileWatcher, type FileWatcherService } from "./src/file-watcher.js";
+import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
+import { createMeshDiscoverTool } from "./src/tools/discover.js";
+import { createMeshStatusTool } from "./src/tools/status.js";
+import { createMeshSyncTool } from "./src/tools/sync.js";
+import { createTransport, type TransportService } from "./src/transport.js";
+
+export type MeshConfig = {
+  enabled?: boolean;
+  nodeName?: string;
+  port?: number;
+  workspaceDir?: string;
+};
+
+export type MeshServices = {
+  discovery: DiscoveryService;
+  transport: TransportService;
+  crdt: CRDTService;
+  fileWatcher: FileWatcherService;
+};
+
+const meshPlugin = {
+  id: "mesh",
+  name: "OpenClaw Mesh",
+  description: "P2P distributed file sync between OpenClaw nodes",
+  configSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: { type: "boolean", default: true },
+      nodeName: { type: "string" },
+      port: { type: "number", default: 18790 },
+      workspaceDir: { type: "string" },
+    },
+  },
+  register(api: OpenClawPluginApi) {
+    const config = (api.pluginConfig as MeshConfig) || {};
+
+    if (config.enabled === false) {
+      api.logger.info("Mesh extension disabled, skipping registration");
+      return;
+    }
+
+    const nodeName = config.nodeName || `node-${process.pid}`;
+    const port = config.port || 18790;
+    const workspaceDir = config.workspaceDir || api.config.workspaceDir || process.cwd();
+
+    api.logger.info(`Initializing mesh node: ${nodeName} on port ${port}`);
+
+    // Initialize mesh services
+    const discovery = createDiscovery({
+      nodeName,
+      port,
+      logger: api.logger,
+    });
+
+    const crdt = createCRDT({
+      nodeName,
+      logger: api.logger,
+    });
+
+    const transport = createTransport({
+      nodeName,
+      port,
+      crdt,
+      logger: api.logger,
+    });
+
+    const fileWatcher = createFileWatcher({
+      workspaceDir,
+      crdt,
+      logger: api.logger,
+    });
+
+    // Register tools
+    api.registerTool((ctx) => createMeshDiscoverTool(discovery, ctx), { name: "mesh_discover" });
+    api.registerTool(
+      (ctx) => createMeshStatusTool({ discovery, transport, crdt, fileWatcher }, ctx),
+      { name: "mesh_status" },
+    );
+    api.registerTool((ctx) => createMeshBroadcastTool(crdt, ctx), { name: "mesh_broadcast" });
+    api.registerTool((ctx) => createMeshSyncTool(crdt, ctx), { name: "mesh_sync" });
+
+    // Hook into heartbeat for periodic sync
+    api.on("heartbeat", async () => {
+      try {
+        // Scan for new peers
+        await discovery.scan();
+
+        // Reconnect to any lost peers
+        await transport.maintainConnections();
+
+        // Sync pending deltas
+        await crdt.syncPendingDeltas();
+      } catch (err) {
+        api.logger.warn(`Mesh heartbeat error: ${err}`);
+      }
+    });
+
+    api.logger.info("Mesh extension registered successfully");
+  },
+};
+
+export default meshPlugin;

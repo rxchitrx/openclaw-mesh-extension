@@ -1,0 +1,26 @@
+{
+  "id": "mesh",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "nodeName": {
+        "type": "string",
+        "description": "Unique name for this mesh node"
+      },
+      "port": {
+        "type": "number",
+        "default": 18790,
+        "description": "Port for P2P WebSocket connections"
+      },
+      "workspaceDir": {
+        "type": "string",
+        "description": "Directory to sync (defaults to OpenClaw workspace)"
+      }
+    }
+  }
+}
