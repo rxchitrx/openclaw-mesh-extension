@@ -10,15 +10,10 @@
       "mesh_discover",
       "mesh_status",
       "mesh_broadcast",
-      "mesh_sync"
+      "mesh_sync",
+      "mesh_track"
     ]
   },
-  "commandAliases": [
-    {
-      "name": "mesh",
-      "kind": "runtime-slash"
-    }
-  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -38,7 +33,7 @@
       },
       "trackDir": {
         "type": "string",
-        "description": "Directory to track and sync with peers (set via /mesh dir <path>)"
+        "description": "Directory to track and sync with peers"
       }
     }
   }

@@ -3,26 +3,33 @@ import type { TransportService } from "../transport.js";
 import type { CRDTService } from "../crdt.js";
 import type { FileWatcherService } from "../file-watcher.js";
 
+type TrackState = {
+  fileWatcher: FileWatcherService | null;
+  currentTrackDir: string | null;
+  startFileWatcher: (dir: string) => Promise<void>;
+  stopFileWatcher: () => Promise<void>;
+};
+
 type MeshServices = {
   discovery: DiscoveryService;
   transport: TransportService;
   crdt: CRDTService;
-  fileWatcher: FileWatcherService | null;
-  currentTrackDir: string | null;
+  getTrackState: () => TrackState;
 };
 
 export function createMeshStatusTool(services: MeshServices, _ctx: any) {
   return {
     label: "Mesh Status",
     name: "mesh_status",
-    description: "Show detailed mesh state for debugging",
+    description: "Show current mesh state — tracked directory, peers, connections, and file sync status",
     parameters: {
       type: "object" as const,
       properties: {},
       required: [] as string[],
     },
     execute: async (_toolCallId: string, _toolParams: any, _signal: any, _onUpdate: any) => {
-      const { discovery, transport, crdt, fileWatcher, currentTrackDir } = services;
+      const { discovery, transport, crdt, getTrackState } = services;
+      const { fileWatcher, currentTrackDir } = getTrackState();
 
       const localNode = discovery.getLocalNode();
       const peers = discovery.getPeers();
@@ -39,7 +46,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       if (currentTrackDir) {
         message += `  ${currentTrackDir} (${watchedFiles.length} files)\n\n`;
       } else {
-        message += `  None — use /mesh dir <path> to start tracking a project\n\n`;
+        message += `  None — tell me to track a project directory to get started\n\n`;
       }
 
       message += `LOCAL NODE\n`;

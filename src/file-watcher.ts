@@ -62,11 +62,13 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     const prevContent = fileContents.get(relativePath);
     if (prevContent === content) return;
 
+    // Always track the file even if CRDT has no diff (e.g. empty file on first scan)
+    fileContents.set(relativePath, content);
+    watchedFiles.add(relativePath);
+
     const delta = await crdt.applyLocalChange(relativePath, content);
 
     if (delta) {
-      fileContents.set(relativePath, content);
-      watchedFiles.add(relativePath);
       logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
     }
   };

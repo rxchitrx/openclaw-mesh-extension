@@ -5,6 +5,7 @@ import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
 import { createMeshStatusTool } from "./src/tools/status.js";
 import { createMeshSyncTool } from "./src/tools/sync.js";
+import { createMeshTrackTool } from "./src/tools/track.js";
 import { createTransport, type TransportService } from "./src/transport.js";
 
 export type MeshConfig = {
@@ -17,7 +18,7 @@ export type MeshConfig = {
 const meshPlugin = {
   id: "mesh",
   name: "OpenClaw Mesh",
-  description: "P2P distributed file sync between OpenClaw nodes — a local offline GitHub for project sharing",
+  description: "P2P project file sharing between OpenClaw nodes — a local offline GitHub",
   configSchema: {
     type: "object" as const,
     additionalProperties: false,
@@ -67,78 +68,21 @@ const meshPlugin = {
       currentTrackDir = null;
     };
 
+    const getTrackState = () => ({
+      fileWatcher,
+      currentTrackDir,
+      startFileWatcher,
+      stopFileWatcher,
+    });
+
     api.registerTool((ctx: any) => createMeshDiscoverTool(discovery, ctx), { name: "mesh_discover" });
     api.registerTool(
-      (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, fileWatcher: fileWatcher!, currentTrackDir }, ctx),
+      (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx),
       { name: "mesh_status" },
     );
     api.registerTool((ctx: any) => createMeshBroadcastTool(crdt, ctx), { name: "mesh_broadcast" });
     api.registerTool((ctx: any) => createMeshSyncTool(crdt, ctx), { name: "mesh_sync" });
-
-    api.registerCommand({
-      name: "mesh",
-      description: "Manage mesh file tracking. Usage: /mesh dir <path> | /mesh stop | /mesh dir",
-      acceptsArgs: true,
-      handler: async (ctx: any) => {
-        const rawArgs: string = ctx.args ?? "";
-        const parts = rawArgs.trim().split(/\s+/);
-        const subcommand = parts[0]?.toLowerCase();
-        const arg = parts.slice(1).join(" ");
-
-        switch (subcommand) {
-          case "dir": {
-            if (!arg) {
-              if (currentTrackDir) {
-                return `Tracking: ${currentTrackDir}`;
-              }
-              return "No directory is being tracked. Use: /mesh dir /path/to/project";
-            }
-
-            const path = await import("path");
-            const fs = await import("fs");
-            const resolved = path.resolve(arg.replace(/^~/, process.env.HOME || "~"));
-
-            try {
-              const stat = await fs.promises.stat(resolved);
-              if (!stat.isDirectory()) {
-                return `Not a directory: ${resolved}`;
-              }
-            } catch {
-              return `Directory does not exist: ${resolved}`;
-            }
-
-            try {
-              await startFileWatcher(resolved);
-              logger.info(`Now tracking: ${resolved}`);
-              return `Now tracking: ${resolved}`;
-            } catch (err: any) {
-              return `Failed to start tracking ${resolved}: ${err.message}`;
-            }
-          }
-
-          case "stop": {
-            if (!fileWatcher) {
-              return "Not tracking any directory.";
-            }
-            await stopFileWatcher();
-            return "Stopped tracking.";
-          }
-
-          case "":
-          case undefined: {
-            if (currentTrackDir) {
-              const watched = fileWatcher?.getWatchedFiles()?.length ?? 0;
-              const pending = crdt.getPendingDeltas().length;
-              return `Tracking: ${currentTrackDir} (${watched} files, ${pending} pending deltas)`;
-            }
-            return "No directory tracked. Use: /mesh dir /path/to/project";
-          }
-
-          default:
-            return `Unknown command: ${subcommand}\nUsage: /mesh dir <path> | /mesh stop | /mesh dir`;
-        }
-      },
-    });
+    api.registerTool((ctx: any) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
 
     api.on("gateway_start", async () => {
       try {
@@ -151,7 +95,7 @@ const meshPlugin = {
           await startFileWatcher(currentTrackDir);
           logger.info(`Auto-tracking directory: ${currentTrackDir}`);
         } else {
-          logger.info("No track directory configured. Use /mesh dir <path> to start tracking a project.");
+          logger.info("No track directory configured. Tell me to track a project directory to get started.");
         }
 
         logger.info(`Mesh services started successfully`);

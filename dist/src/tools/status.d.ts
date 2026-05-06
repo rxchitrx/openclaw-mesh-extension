@@ -2,12 +2,17 @@ import type { DiscoveryService } from "../discovery.js";
 import type { TransportService } from "../transport.js";
 import type { CRDTService } from "../crdt.js";
 import type { FileWatcherService } from "../file-watcher.js";
+type TrackState = {
+    fileWatcher: FileWatcherService | null;
+    currentTrackDir: string | null;
+    startFileWatcher: (dir: string) => Promise<void>;
+    stopFileWatcher: () => Promise<void>;
+};
 type MeshServices = {
     discovery: DiscoveryService;
     transport: TransportService;
     crdt: CRDTService;
-    fileWatcher: FileWatcherService | null;
-    currentTrackDir: string | null;
+    getTrackState: () => TrackState;
 };
 export declare function createMeshStatusTool(services: MeshServices, _ctx: any): {
     label: string;

@@ -2,14 +2,15 @@ export function createMeshStatusTool(services, _ctx) {
     return {
         label: "Mesh Status",
         name: "mesh_status",
-        description: "Show detailed mesh state for debugging",
+        description: "Show current mesh state — tracked directory, peers, connections, and file sync status",
         parameters: {
             type: "object",
             properties: {},
             required: [],
         },
         execute: async (_toolCallId, _toolParams, _signal, _onUpdate) => {
-            const { discovery, transport, crdt, fileWatcher, currentTrackDir } = services;
+            const { discovery, transport, crdt, getTrackState } = services;
+            const { fileWatcher, currentTrackDir } = getTrackState();
             const localNode = discovery.getLocalNode();
             const peers = discovery.getPeers();
             const connections = transport.getConnections();
@@ -24,7 +25,7 @@ export function createMeshStatusTool(services, _ctx) {
                 message += `  ${currentTrackDir} (${watchedFiles.length} files)\n\n`;
             }
             else {
-                message += `  None — use /mesh dir <path> to start tracking a project\n\n`;
+                message += `  None — tell me to track a project directory to get started\n\n`;
             }
             message += `LOCAL NODE\n`;
             message += `  Name: ${localNode.name}\n`;
