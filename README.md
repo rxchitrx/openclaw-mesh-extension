@@ -16,29 +16,57 @@ Turns multiple OpenClaw instances into a distributed system that syncs files aut
 ## Prerequisites
 
 - Node.js >= 22
-- OpenClaw installed globally (`npm install -g openclaw`)
+- OpenClaw installed globally (`npm install -g openclaw` or `pnpm add -g openclaw`)
 - Two machines on the same WiFi network
 
 ## Installation
 
-### Step 1: Locate OpenClaw Installation
+### Step 1: Find Your OpenClaw Installation
+
+Run this command to discover where OpenClaw is installed:
 
 ```bash
-# Find where OpenClaw is installed
+# Find the openclaw binary
 which openclaw
+# or
+where openclaw    # Windows PowerShell
+```
 
-# Usually one of these locations:
-# macOS (Homebrew): /opt/homebrew/lib/node_modules/openclaw
-# macOS (default): /usr/local/lib/node_modules/openclaw
-# Linux: /usr/lib/node_modules/openclaw
-# Windows: C:\Users\<user>\AppData\Roaming\npm\node_modules\openclaw
+Then find the installation directory:
+
+```bash
+# macOS/Linux
+ls -la $(dirname $(dirname $(which openclaw)))/lib/node_modules/openclaw
+
+# Windows (PowerShell)
+Get-ChildItem (Split-Path (Split-Path (Get-Command openclaw).Source) -Parent) -ChildPath "node_modules\openclaw"
+```
+
+**Common locations:**
+
+| Platform | Typical Path |
+|----------|--------------|
+| macOS (Homebrew) | `/opt/homebrew/lib/node_modules/openclaw` |
+| macOS (default npm) | `/usr/local/lib/node_modules/openclaw` |
+| Linux (npm) | `/usr/lib/node_modules/openclaw` |
+| Linux (nvm) | `~/.nvm/versions/node/<version>/lib/node_modules/openclaw` |
+| Windows (npm) | `C:\Users\<user>\AppData\Roaming\npm\node_modules\openclaw` |
+| Windows (pnpm) | `C:\Users\<user>\AppData\Local\pnpm\global\<version>\node_modules\openclaw` |
+
+**The key is to find the `extensions` folder inside the OpenClaw installation.**
+
+You can verify you found the right place:
+
+```bash
+# Should list other extensions like discord, telegram, whatsapp
+ls <openclaw-install-path>/extensions/
 ```
 
 ### Step 2: Clone the Extension
 
 ```bash
-# Navigate to OpenClaw extensions folder
-cd /opt/homebrew/lib/node_modules/openclaw/extensions
+# Navigate to the extensions folder you found in Step 1
+cd <openclaw-install-path>/extensions
 
 # Clone this repo as "mesh"
 git clone https://github.com/rxchitrx/openclaw-mesh-extension.git mesh
@@ -50,18 +78,19 @@ cd mesh
 ### Step 3: Install Dependencies
 
 ```bash
-# From the mesh folder
+# From the mesh folder (where you are now)
 pnpm install
 
 # If pnpm is not installed:
-# npm install -g pnpm
+npm install -g pnpm
+# then run pnpm install
 ```
 
 ### Step 4: Rebuild OpenClaw
 
 ```bash
-# Go back to OpenClaw root
-cd /opt/homebrew/lib/node_modules/openclaw
+# Go back to OpenClaw root (the folder you found in Step 1)
+cd <openclaw-install-path>
 
 # Rebuild to include the new extension
 pnpm build
@@ -70,11 +99,46 @@ pnpm build
 ### Step 5: Restart OpenClaw Gateway
 
 ```bash
-# Stop the running gateway
+# Stop the running gateway (if any)
 openclaw gateway stop
 
 # Start it again
 openclaw gateway start
+```
+
+## Quick Install Script
+
+If you're comfortable with shell scripts, here's a quick installer:
+
+```bash
+#!/bin/bash
+# Run this after installing OpenClaw globally
+
+# Find OpenClaw installation
+OPENCLAW_PATH=$(dirname $(dirname $(which openclaw)))/lib/node_modules/openclaw
+
+if [ ! -d "$OPENCLAW_PATH" ]; then
+  echo "Could not find OpenClaw installation"
+  echo "Please install with: npm install -g openclaw"
+  exit 1
+fi
+
+echo "Found OpenClaw at: $OPENCLAW_PATH"
+
+# Clone extension
+cd "$OPENCLAW_PATH/extensions"
+git clone https://github.com/rxchitrx/openclaw-mesh-extension.git mesh
+
+# Install dependencies
+cd mesh
+pnpm install
+
+# Rebuild OpenClaw
+cd "$OPENCLAW_PATH"
+pnpm build
+
+echo "Mesh extension installed!"
+echo "Restart your gateway: openclaw gateway stop && openclaw gateway start"
 ```
 
 ## Verification
@@ -94,6 +158,11 @@ Expected response:
 📁 Synced Files: 0
 ...
 ```
+
+If you see an error or "unknown tool", the extension didn't load. Check:
+1. Is the `mesh` folder in the right `extensions/` directory?
+2. Did you run `pnpm build` from the OpenClaw root?
+3. Did you restart the gateway?
 
 ## Usage
 
@@ -208,74 +277,124 @@ Add to your `~/.openclaw/openclaw.json`:
 | `port` | number | `18790` | Port for P2P connections |
 | `workspaceDir` | string | OpenClaw workspace | Directory to sync |
 
-## Demo Setup (2 Laptops)
+## Demo Setup (2 Machines)
 
-### On Both Laptops
+### On Both Machines
 
-1. Install OpenClaw: `npm install -g openclaw`
+1. Install OpenClaw globally: `npm install -g openclaw`
 2. Install mesh extension (see Installation above)
-3. Note your local IP: `ifconfig | grep "inet " | grep -v 127.0.0.1`
+3. Note your local IP:
+   ```bash
+   # macOS/Linux
+   ifconfig | grep "inet " | grep -v 127.0.0.1
+   
+   # Windows
+   ipconfig | findstr IPv4
+   ```
 
-### Laptop A
+### Machine A
 
 ```bash
 # Start OpenClaw
 openclaw gateway start
 
 # Create a test file
-echo "Hello from Laptop A" > ~/.openclaw/workspace/mesh-test.md
+echo "Hello from Machine A" > ~/.openclaw/workspace/mesh-test.md
 
 # Check status
 openclaw agent --message "mesh_status"
 ```
 
-### Laptop B
+### Machine B
 
 ```bash
 # Start OpenClaw
 openclaw gateway start
 
-# Check for Laptop A
+# Check for Machine A
 openclaw agent --message "mesh_discover"
 
-# Should show Laptop A in the peer list
+# Should show Machine A in the peer list
 ```
 
 ### Verify Sync
 
 ```bash
-# On Laptop B, check if the file synced
+# On Machine B, check if the file synced
 openclaw agent --message "mesh_status"
 
-# Should show synced files
+# Check the file content
+cat ~/.openclaw/workspace/mesh-test.md
 ```
 
 ## Troubleshooting
 
-### Extension Not Loading
+### "Cannot find OpenClaw installation"
+
+OpenClaw must be installed globally first:
 
 ```bash
-# Check if extension is in the right place
-ls /opt/homebrew/lib/node_modules/openclaw/extensions/mesh
+# Using npm
+npm install -g openclaw
 
-# Should see: index.ts, package.json, openclaw.plugin.json, src/
-
-# Check if it was bundled
-ls /opt/homebrew/lib/node_modules/openclaw/dist/extensions/mesh
-
-# Should see: index.js, package.json, openclaw.plugin.json
+# Using pnpm
+pnpm add -g openclaw
 ```
+
+Verify installation:
+
+```bash
+openclaw --version
+```
+
+### "pnpm: command not found"
+
+Install pnpm first:
+
+```bash
+npm install -g pnpm
+```
+
+### Extension Not Loading
+
+1. **Check extension location:**
+   ```bash
+   ls <openclaw-path>/extensions/mesh
+   # Should show: index.ts, package.json, openclaw.plugin.json, src/, README.md
+   ```
+
+2. **Check if it was bundled:**
+   ```bash
+   ls <openclaw-path>/dist/extensions/mesh
+   # Should show: index.js, package.json, openclaw.plugin.json
+   ```
+
+3. **Did you rebuild?**
+   ```bash
+   cd <openclaw-path>
+   pnpm build
+   ```
+
+4. **Did you restart the gateway?**
+   ```bash
+   openclaw gateway stop
+   openclaw gateway start
+   ```
 
 ### No Peers Discovered
 
-1. **Same WiFi?** Both laptops must be on the same network
-2. **Firewall?** macOS may block incoming connections
-   - System Settings → Privacy & Security → Local Network
-   - Allow OpenClaw/Node
+1. **Same WiFi?** Both machines must be on the same network
+2. **Firewall?** Check if incoming connections are blocked
+   - **macOS:** System Settings → Privacy & Security → Local Network → Allow Node/OpenClaw
+   - **Linux:** Check `ufw` or `firewalld`
+   - **Windows:** Windows Defender Firewall → Allow Node.js
 3. **mDNS working?** Test with:
    ```bash
-   # Should show other machines
+   # macOS/Linux
    dns-sd -B _openclaw-mesh._tcp
+   
+   # Linux (avahi)
+   avahi-browse -at | grep openclaw
    ```
 
 ### Tools Not Available
@@ -284,17 +403,29 @@ ls /opt/homebrew/lib/node_modules/openclaw/dist/extensions/mesh
 # Check if mesh extension loaded
 openclaw agent --message "What tools do you have?"
 
-# Look for mesh_discover, mesh_status, mesh_broadcast, mesh_sync
+# Look for mesh_discover, mesh_status, mesh_broadcast, mesh_sync in the response
 ```
 
 ### Build Errors
 
 ```bash
 # Clean and rebuild
-cd /opt/homebrew/lib/node_modules/openclaw
+cd <openclaw-path>
 rm -rf node_modules/.cache dist
 pnpm install
 pnpm build
+```
+
+### Permission Errors
+
+On macOS/Linux, you might need `sudo` if OpenClaw was installed with sudo:
+
+```bash
+sudo git clone https://github.com/rxchitrx/openclaw-mesh-extension.git <openclaw-path>/extensions/mesh
+cd <openclaw-path>/extensions/mesh
+sudo pnpm install
+cd <openclaw-path>
+sudo pnpm build
 ```
 
 ## Technical Details
