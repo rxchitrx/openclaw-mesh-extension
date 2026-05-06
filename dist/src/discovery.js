@@ -1,4 +1,4 @@
-const MESH_SERVICE_TYPE = "_openclaw-mesh._tcp";
+const MESH_SERVICE_TYPE = "_oc-mesh._tcp";
 export function createDiscovery(config) {
     const { nodeName, port, logger } = config;
     const peers = new Map();

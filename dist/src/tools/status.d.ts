@@ -6,7 +6,8 @@ type MeshServices = {
     discovery: DiscoveryService;
     transport: TransportService;
     crdt: CRDTService;
-    fileWatcher: FileWatcherService;
+    fileWatcher: FileWatcherService | null;
+    currentTrackDir: string | null;
 };
 export declare function createMeshStatusTool(services: MeshServices, _ctx: any): {
     label: string;
@@ -30,6 +31,7 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                     host: string;
                     port: number;
                 };
+                trackDir: string;
                 peerCount: number;
                 connectionCount: number;
                 syncedFiles: number;

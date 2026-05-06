@@ -1,18 +1,8 @@
-import { type CRDTService } from "./src/crdt.js";
-import { type DiscoveryService } from "./src/discovery.js";
-import { type FileWatcherService } from "./src/file-watcher.js";
-import { type TransportService } from "./src/transport.js";
 export type MeshConfig = {
     enabled?: boolean;
     nodeName?: string;
     port?: number;
-    workspaceDir?: string;
-};
-export type MeshServices = {
-    discovery: DiscoveryService;
-    transport: TransportService;
-    crdt: CRDTService;
-    fileWatcher: FileWatcherService;
+    trackDir?: string;
 };
 declare const meshPlugin: {
     id: string;
@@ -33,7 +23,7 @@ declare const meshPlugin: {
                 type: string;
                 default: number;
             };
-            workspaceDir: {
+            trackDir: {
                 type: string;
             };
         };

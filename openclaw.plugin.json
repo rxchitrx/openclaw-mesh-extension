@@ -1,7 +1,7 @@
 {
   "id": "mesh",
   "name": "OpenClaw Mesh",
-  "description": "P2P distributed file sync between OpenClaw nodes via mDNS discovery and WebSocket connections",
+  "description": "P2P project file sharing between OpenClaw nodes — a local offline GitHub",
   "activation": {
     "onStartup": true
   },
@@ -13,6 +13,12 @@
       "mesh_sync"
     ]
   },
+  "commandAliases": [
+    {
+      "name": "mesh",
+      "kind": "runtime-slash"
+    }
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -30,9 +36,9 @@
         "default": 18790,
         "description": "Port for P2P WebSocket connections"
       },
-      "workspaceDir": {
+      "trackDir": {
         "type": "string",
-        "description": "Directory to sync (defaults to OpenClaw workspace)"
+        "description": "Directory to track and sync with peers (set via /mesh dir <path>)"
       }
     }
   }

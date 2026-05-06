@@ -19,7 +19,7 @@ export type DiscoveryService = {
   getLocalNode: () => { name: string; host: string; port: number };
 };
 
-const MESH_SERVICE_TYPE = "_openclaw-mesh._tcp";
+const MESH_SERVICE_TYPE = "_oc-mesh._tcp";
 
 export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
   const { nodeName, port, logger } = config;
