@@ -1,5 +1,3 @@
-import * as os from "os";
-
 export type PeerInfo = {
   name: string;
   host: string;
@@ -23,41 +21,38 @@ export type DiscoveryService = {
 
 const MESH_SERVICE_TYPE = "oc-mesh";
 
+function getLocalIP(): string {
+  const os: typeof import("os") = require("os");
+  const interfaces = os.networkInterfaces();
+  const nonInternal: Array<{ name: string; address: string }> = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        nonInternal.push({ name, address: iface.address });
+      }
+    }
+  }
+  if (nonInternal.length === 0) return "127.0.0.1";
+  return nonInternal[nonInternal.length - 1].address;
+}
+
 export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
   const { nodeName, port, logger } = config;
   const peers = new Map<string, PeerInfo>();
 
+  let ciaoService: any = null;
   let bonjour: any = null;
-  let service: any = null;
   let browser: any = null;
-
-  const getLocalIP = (): string => {
-    const interfaces = os.networkInterfaces();
-
-    const nonInternal: Array<{ name: string; address: string }> = [];
-    for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name] || []) {
-        if (iface.family === "IPv4" && !iface.internal) {
-          nonInternal.push({ name, address: iface.address });
-        }
-      }
-    }
-
-    if (nonInternal.length === 0) return "127.0.0.1";
-    return nonInternal[nonInternal.length - 1].address;
-  };
 
   return {
     async start() {
-
       try {
-        const { Bonjour } = await import("bonjour-service");
-        bonjour = new Bonjour();
+        const { getResponder } = await import("@homebridge/ciao");
+        const responder = getResponder();
 
-        service = bonjour.publish({
+        ciaoService = responder.createService({
           name: nodeName,
           type: MESH_SERVICE_TYPE,
-          protocol: "tcp",
           port: port,
           txt: {
             node: nodeName,
@@ -65,14 +60,24 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
           },
         });
 
-        service.start();
+        await ciaoService.advertise();
+        logger.info(`mDNS publisher started: ${nodeName} (${MESH_SERVICE_TYPE}) via ciao`);
+      } catch (err) {
+        logger.error(`Failed to start mDNS publisher: ${err}`);
+      }
+
+      try {
+        const { Bonjour } = await import("bonjour-service");
+        bonjour = new Bonjour();
 
         browser = bonjour.find({ type: MESH_SERVICE_TYPE, protocol: "tcp" });
 
         browser.on("up", (svc: any) => {
           if (svc.name === nodeName) return;
 
-          const host = svc.referer?.address || svc.host || "unknown";
+          const addresses = svc.addresses || [];
+          const ipv4 = addresses.find((a: string) => /^\d+\.\d+\.\d+\.\d+$/.test(a) && a !== "127.0.0.1");
+          const host = ipv4 || svc.referer?.address || svc.host || "unknown";
           const peerPort = svc.port || port;
 
           const existing = peers.get(svc.name);
@@ -100,38 +105,31 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         });
 
         browser.start();
-
-        logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port} (${MESH_SERVICE_TYPE})`);
+        logger.info(`mDNS browser started for ${MESH_SERVICE_TYPE}`);
       } catch (err) {
-        logger.error(`Failed to start mDNS discovery: ${err}`);
-        logger.warn("Mesh will run in standalone mode (no peer discovery)");
+        logger.error(`Failed to start mDNS browser: ${err}`);
+        logger.warn("Peer browsing unavailable");
       }
+
+      logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port} (${MESH_SERVICE_TYPE})`);
     },
 
     async stop() {
       if (browser) {
-        try {
-          browser.stop();
-        } catch {}
-      }
-      if (service) {
-        try {
-          service.stop();
-        } catch {}
+        try { browser.stop(); } catch {}
       }
       if (bonjour) {
-        try {
-          bonjour.destroy();
-        } catch {}
+        try { bonjour.destroy(); } catch {}
+      }
+      if (ciaoService) {
+        try { await ciaoService.end(); } catch {}
       }
       logger.info("Mesh discovery stopped");
     },
 
     async scan() {
       if (browser) {
-        try {
-          browser.update();
-        } catch {}
+        try { browser.update(); } catch {}
       }
 
       const now = Date.now();
@@ -140,7 +138,7 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         if (now - peer.lastSeen > 120000) {
           peers.delete(name);
           staleCount++;
-          logger.warn(`Stale peer removed: ${name} (last seen ${Math.floor((now - peer.lastSeen) / 1000)}s ago)`);
+          logger.warn(`Stale peer removed: ${name}`);
         }
       }
       if (staleCount > 0) {
