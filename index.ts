@@ -148,6 +148,19 @@ const meshPlugin = {
         }
 
         logger.info(`Mesh services started successfully`);
+
+        setTimeout(async () => {
+          await discovery.scan();
+          const discoveredPeers = discovery.getPeers();
+          for (const peer of discoveredPeers) {
+            const connections = transport.getConnections();
+            const pending = transport.getPendingConnections();
+            if (!connections.includes(peer.name) && !pending.some((p) => p.peerName === peer.name)) {
+              logger.info(`Auto-connecting to discovered peer: ${peer.name} at ${peer.host}:${peer.port}`);
+              await transport.connectToPeer(peer);
+            }
+          }
+        }, 5000);
       } catch (err) {
         logger.error(`Failed to start mesh services: ${err}`);
       }
