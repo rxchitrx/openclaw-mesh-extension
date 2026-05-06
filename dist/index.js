@@ -93,7 +93,7 @@ const meshPlugin = {
         transport.setNotificationHandler((notification) => {
             tryInjectNotification(notification.message);
         });
-        api.registerTool((ctx) => createMeshDiscoverTool(discovery, ctx), { name: "mesh_discover" });
+        api.registerTool((ctx) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
         api.registerTool((ctx) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx), { name: "mesh_status" });
         api.registerTool((ctx) => createMeshBroadcastTool({ crdt, transport, getFileContent }, ctx), { name: "mesh_broadcast" });
         api.registerTool((ctx) => createMeshSyncTool({ crdt, transport, getFileContent, getLocalManifest }, ctx), { name: "mesh_sync" });

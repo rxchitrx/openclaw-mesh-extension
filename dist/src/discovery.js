@@ -1,6 +1,6 @@
 const MESH_SERVICE_TYPE = "oc-mesh";
+import * as os from "os";
 function getLocalIP() {
-    const os = require("os");
     const interfaces = os.networkInterfaces();
     const nonInternal = [];
     for (const name of Object.keys(interfaces)) {

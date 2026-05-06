@@ -21,8 +21,9 @@ export type DiscoveryService = {
 
 const MESH_SERVICE_TYPE = "oc-mesh";
 
+import * as os from "os";
+
 function getLocalIP(): string {
-  const os: typeof import("os") = require("os");
   const interfaces = os.networkInterfaces();
   const nonInternal: Array<{ name: string; address: string }> = [];
   for (const name of Object.keys(interfaces)) {
