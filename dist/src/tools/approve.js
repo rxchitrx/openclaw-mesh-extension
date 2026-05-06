@@ -2,7 +2,7 @@ export function createMeshApproveTool(transport, _ctx) {
     return {
         label: "Mesh Approve",
         name: "mesh_approve",
-        description: "Approve or deny a pending peer connection. Use when a peer requests to join the mesh.",
+        description: "Approve or deny a pending peer connection. ONLY use this tool when the user explicitly tells you to approve or deny a peer. Never approve or deny on your own.",
         parameters: {
             type: "object",
             properties: {

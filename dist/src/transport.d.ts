@@ -20,8 +20,14 @@ export type PendingConnection = {
     host: string;
     connectedAt: number;
 };
+export type NodeInfo = {
+    nodeName: string;
+    trackingDir: string | null;
+    trackingFileCount: number;
+    trackingFiles: string[];
+};
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received" | "node_info_received";
     message: string;
     peerName?: string;
     data?: any;
@@ -44,5 +50,7 @@ export type TransportService = {
     notifyFileDeleted: (relativePath: string) => void;
     setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
     maintainConnections: () => Promise<void>;
+    getNodeInfo: (peerName: string) => NodeInfo | null;
+    setNodeInfoProvider: (provider: () => NodeInfo) => void;
 };
 export declare function createTransport(config: TransportConfig): TransportService;

@@ -44,13 +44,19 @@ export function createMeshStatusTool(services, _ctx) {
             if (connections.length > 0) {
                 for (const name of connections) {
                     const manifest = transport.getRemoteManifest(name);
-                    message += `    ${name} ${manifest ? `(${manifest.length} files in manifest)` : "(no manifest yet)"}\n`;
+                    const info = transport.getNodeInfo(name);
+                    message += `    ${name} ${manifest ? `(${manifest.length} files)` : "(no manifest)"}`;
+                    if (info) {
+                        const dirStr = info.trackingDir || "not tracking";
+                        message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+                    }
+                    message += `\n`;
                 }
             }
             if (pending.length > 0) {
                 message += `  PENDING APPROVAL: ${pending.length}\n`;
                 for (const p of pending) {
-                    message += `    ${p.peerName} from ${p.host} (say 'approve ${p.peerName}' or 'deny ${p.peerName}')\n`;
+                    message += `    ${p.peerName} from ${p.host}\n`;
                 }
             }
             message += `\n`;

@@ -24,8 +24,15 @@ export type PendingConnection = {
   connectedAt: number;
 };
 
+export type NodeInfo = {
+  nodeName: string;
+  trackingDir: string | null;
+  trackingFileCount: number;
+  trackingFiles: string[];
+};
+
 export type TransportNotification = {
-  type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received";
+  type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received" | "node_info_received";
   message: string;
   peerName?: string;
   data?: any;
@@ -49,6 +56,8 @@ export type TransportService = {
   notifyFileDeleted: (relativePath: string) => void;
   setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
   maintainConnections: () => Promise<void>;
+  getNodeInfo: (peerName: string) => NodeInfo | null;
+  setNodeInfoProvider: (provider: () => NodeInfo) => void;
 };
 
 export function createTransport(config: TransportConfig): TransportService {
@@ -58,6 +67,8 @@ export function createTransport(config: TransportConfig): TransportService {
   const pendingConnections = new Map<string, PendingConnection>();
   const remoteManifests = new Map<string, TrackedFile[]>();
   const approvedPeers = new Set<string>();
+  const remoteNodeInfo = new Map<string, NodeInfo>();
+  let nodeInfoProvider: (() => NodeInfo) | null = null;
   let server: any = null;
   let notificationHandler: ((notification: TransportNotification) => void) | null = null;
 
@@ -101,7 +112,7 @@ export function createTransport(config: TransportConfig): TransportService {
               logger.info(`Approval request from: ${peerName}`);
               notify({
                 type: "peer_pending",
-                message: `Peer '${peerName}' wants to join the mesh. Say 'approve ${peerName}' or 'deny ${peerName}'.`,
+                message: `Peer '${peerName}' wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
                 peerName,
               });
             }
@@ -126,6 +137,7 @@ export function createTransport(config: TransportConfig): TransportService {
                 message: `Peer '${peerName}' approved your connection request.`,
                 peerName,
               });
+              sendNodeInfoToPeer(peerName);
             }
           } else {
             const pending = pendingConnections.get(peerName);
@@ -138,6 +150,27 @@ export function createTransport(config: TransportConfig): TransportService {
                 peerName,
               });
             }
+          }
+          break;
+
+        case "node_info":
+          if (!approved) return;
+          {
+            const info: NodeInfo = {
+              nodeName: message.nodeName,
+              trackingDir: message.trackingDir,
+              trackingFileCount: message.trackingFileCount,
+              trackingFiles: message.trackingFiles || [],
+            };
+            remoteNodeInfo.set(peerName, info);
+            const dirStr = info.trackingDir ? info.trackingDir : "none";
+            const fileStr = info.trackingFileCount > 0 ? `${info.trackingFileCount} file(s)` : "no files";
+            notify({
+              type: "node_info_received",
+              message: `Peer '${peerName}' info — tracking: ${dirStr} (${fileStr})`,
+              peerName,
+              data: info,
+            });
           }
           break;
 
@@ -208,6 +241,20 @@ export function createTransport(config: TransportConfig): TransportService {
       }
     } catch (err) {
       logger.error(`Failed to handle message from ${peerName}: ${err}`);
+    }
+  };
+
+  const sendNodeInfoToPeer = (peerName: string) => {
+    if (nodeInfoProvider) {
+      const info = nodeInfoProvider();
+      sendToPeer(peerName, {
+        type: "node_info",
+        nodeName: info.nodeName,
+        trackingDir: info.trackingDir,
+        trackingFileCount: info.trackingFileCount,
+        trackingFiles: info.trackingFiles,
+      });
+      logger.info(`Sent node_info to ${peerName}`);
     }
   };
 
@@ -300,7 +347,7 @@ export function createTransport(config: TransportConfig): TransportService {
 
             notify({
               type: "peer_pending",
-              message: `Peer '${peerName}' from ${host} wants to join the mesh. Say 'approve ${peerName}' or 'deny ${peerName}'.`,
+              message: `Peer '${peerName}' from ${host} wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
               peerName,
             });
           }
@@ -434,9 +481,10 @@ export function createTransport(config: TransportConfig): TransportService {
       logger.info(`Approved peer: ${peerName}`);
       notify({
         type: "peer_approved",
-        message: `Approved peer '${peerName}'. Manifest will be exchanged.`,
+        message: `Approved peer '${peerName}'. Info will be exchanged.`,
         peerName,
       });
+      sendNodeInfoToPeer(peerName);
 
       return true;
     },
@@ -523,6 +571,14 @@ export function createTransport(config: TransportConfig): TransportService {
           });
         }
       }
+    },
+
+    getNodeInfo(peerName: string): NodeInfo | null {
+      return remoteNodeInfo.get(peerName) || null;
+    },
+
+    setNodeInfoProvider(provider: () => NodeInfo) {
+      nodeInfoProvider = provider;
     },
   };
 }

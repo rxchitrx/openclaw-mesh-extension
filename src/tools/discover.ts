@@ -51,7 +51,7 @@ export function createMeshDiscoverTool(services: DiscoverServices, _ctx: any) {
           const found = pending.find((p) => p.host === peerHost);
           if (found) {
             return {
-              content: [{ type: "text" as const, text: `Connected to ${peerHost}:${peerPort}. Peer '${found.peerName}' is awaiting approval. Say 'approve ${found.peerName}' to start syncing.` }],
+              content: [{ type: "text" as const, text: `Connected to ${peerHost}:${peerPort}. Peer '${found.peerName}' is awaiting your approval.` }],
               details: { ok: true, action: "manual_connect", host: peerHost, port: peerPort, peerName: found.peerName },
             };
           }
@@ -85,12 +85,12 @@ export function createMeshDiscoverTool(services: DiscoverServices, _ctx: any) {
       message += `  Port: ${localNode.port}\n\n`;
 
       if (peers.length === 0 && connections.length === 0 && pending.length === 0) {
-        message += `PEERS: None found via mDNS\n`;
-        message += `  mDNS may be blocked by your WiFi router (common on some networks).\n`;
+        message += `PEERS: None found\n`;
+        message += `  mDNS and subnet scan found no peers.\n`;
         message += `  Connect manually: say 'connect to 192.168.29.106:18790'\n`;
       } else {
         if (peers.length > 0) {
-          message += `DISCOVERED (mDNS): ${peers.length}\n`;
+          message += `DISCOVERED: ${peers.length}\n`;
           for (const peer of peers) {
             const ago = Math.floor((Date.now() - peer.lastSeen) / 1000);
             message += `  ${peer.name} at ${peer.host}:${peer.port} (${ago}s ago)\n`;
@@ -109,7 +109,13 @@ export function createMeshDiscoverTool(services: DiscoverServices, _ctx: any) {
         if (connections.length > 0) {
           message += `CONNECTED: ${connections.length}\n`;
           for (const name of connections) {
-            message += `  ${name}\n`;
+            const info = transport.getNodeInfo(name);
+            message += `  ${name}`;
+            if (info) {
+              const dirStr = info.trackingDir || "not tracking";
+              message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+            }
+            message += `\n`;
           }
         }
       }

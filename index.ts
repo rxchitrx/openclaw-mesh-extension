@@ -113,6 +113,16 @@ const meshPlugin = {
       tryInjectNotification(notification.message);
     });
 
+    transport.setNodeInfoProvider(() => {
+      const manifest = getLocalManifest();
+      return {
+        nodeName,
+        trackingDir: currentTrackDir,
+        trackingFileCount: manifest.length,
+        trackingFiles: manifest.map((f) => f.relativePath),
+      };
+    });
+
     api.registerTool((ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
     api.registerTool(
       (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx),
