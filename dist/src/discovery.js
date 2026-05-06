@@ -1,8 +1,10 @@
-const MESH_SERVICE_TYPE = "_oc-mesh._tcp";
+const MESH_SERVICE_TYPE = "oc-mesh";
 export function createDiscovery(config) {
     const { nodeName, port, logger } = config;
     const peers = new Map();
+    let bonjour = null;
     let service = null;
+    let browser = null;
     let localHost = "0.0.0.0";
     const getLocalIP = async () => {
         const os = await import("os");
@@ -20,20 +22,47 @@ export function createDiscovery(config) {
         async start() {
             localHost = await getLocalIP();
             try {
-                const { getResponder } = await import("@homebridge/ciao");
-                const responder = getResponder();
-                service = responder.createService({
+                const { Bonjour } = await import("bonjour-service");
+                bonjour = new Bonjour();
+                service = bonjour.publish({
                     name: nodeName,
                     type: MESH_SERVICE_TYPE,
+                    protocol: "tcp",
                     port: port,
                     txt: {
                         node: nodeName,
                         version: "1.0.0",
                     },
                 });
-                await service.advertise();
+                service.start();
+                browser = bonjour.find({ type: MESH_SERVICE_TYPE, protocol: "tcp" });
+                browser.on("up", (svc) => {
+                    if (svc.name === nodeName)
+                        return;
+                    const host = svc.referer?.address || svc.host || "unknown";
+                    const peerPort = svc.port || port;
+                    const existing = peers.get(svc.name);
+                    if (existing && existing.host === host && existing.port === peerPort) {
+                        existing.lastSeen = Date.now();
+                        return;
+                    }
+                    const peer = {
+                        name: svc.name,
+                        host,
+                        port: peerPort,
+                        lastSeen: Date.now(),
+                    };
+                    peers.set(svc.name, peer);
+                    logger.info(`Peer discovered: ${svc.name} at ${host}:${peerPort}`);
+                });
+                browser.on("down", (svc) => {
+                    if (peers.has(svc.name)) {
+                        peers.delete(svc.name);
+                        logger.info(`Peer disappeared: ${svc.name}`);
+                    }
+                });
+                browser.start();
                 logger.info(`Mesh discovery started: ${nodeName} at ${localHost}:${port} (${MESH_SERVICE_TYPE})`);
-                logger.info(`Note: Peer browsing via mDNS is not supported by @homebridge/ciao (advertiser-only). Manual peer config or P2P scanning needed.`);
             }
             catch (err) {
                 logger.error(`Failed to start mDNS discovery: ${err}`);
@@ -41,21 +70,37 @@ export function createDiscovery(config) {
             }
         },
         async stop() {
+            if (browser) {
+                try {
+                    browser.stop();
+                }
+                catch { }
+            }
             if (service) {
                 try {
-                    await service.end();
-                    logger.info("Mesh discovery stopped");
+                    service.stop();
                 }
-                catch (err) {
-                    logger.error(`Error stopping discovery: ${err}`);
-                }
+                catch { }
             }
+            if (bonjour) {
+                try {
+                    bonjour.destroy();
+                }
+                catch { }
+            }
+            logger.info("Mesh discovery stopped");
         },
         async scan() {
+            if (browser) {
+                try {
+                    browser.update();
+                }
+                catch { }
+            }
             const now = Date.now();
             let staleCount = 0;
             for (const [name, peer] of peers) {
-                if (now - peer.lastSeen > 60000) {
+                if (now - peer.lastSeen > 120000) {
                     peers.delete(name);
                     staleCount++;
                     logger.warn(`Stale peer removed: ${name} (last seen ${Math.floor((now - peer.lastSeen) / 1000)}s ago)`);

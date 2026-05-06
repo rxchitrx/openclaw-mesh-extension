@@ -39,9 +39,11 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                 trackDir: string;
                 peerCount: number;
                 connectionCount: number;
+                pendingApprovalCount: number;
                 syncedFiles: number;
                 watchedFiles: number;
                 pendingDeltas: number;
+                binaryFiles: number;
                 health: string;
                 timestamp: string;
             };

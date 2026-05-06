@@ -1,26 +1,49 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 const IGNORE_PATTERNS = [/node_modules/, /\.git/, /dist/, /\.DS_Store/, /Thumbs\.db/];
-const TEXT_EXTENSIONS = [
+const TEXT_EXTENSIONS = new Set([
     ".md", ".txt", ".json", ".ts", ".js", ".tsx", ".jsx",
     ".yml", ".yaml", ".toml", ".ini", ".env",
     ".html", ".css", ".scss", ".xml", ".sh", ".bash", ".zsh",
-];
+    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h",
+    ".sql", ".graphql", ".vue", ".svelte",
+    ".gitignore", ".editorconfig", ".prettierrc", ".eslintrc",
+    ".lock", ".log", ".conf", ".cfg",
+]);
 export function createFileWatcher(config) {
     const { workspaceDir, crdt, logger } = config;
-    const watchedFiles = new Set();
+    const watchedFiles = new Map();
     const fileContents = new Map();
     let watcher = null;
+    let onFileDeleted = null;
     const shouldWatch = (filePath) => {
         for (const pattern of IGNORE_PATTERNS) {
-            if (pattern.test(filePath)) {
+            if (pattern.test(filePath))
                 return false;
-            }
         }
-        const ext = path.extname(filePath).toLowerCase();
-        return TEXT_EXTENSIONS.includes(ext);
+        return true;
     };
-    const readFile = async (filePath) => {
+    const isBinaryFile = (filePath) => {
+        const ext = path.extname(filePath).toLowerCase();
+        if (TEXT_EXTENSIONS.has(ext))
+            return false;
+        if (ext === "" || ext === ".example" || ext === ".sample")
+            return false;
+        const binaryExts = new Set([
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+            ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".flac", ".ogg",
+            ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".exe", ".dll", ".so", ".dylib", ".wasm",
+            ".sqlite", ".db",
+        ]);
+        return binaryExts.has(ext);
+    };
+    const computeHash = (content) => {
+        return crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+    };
+    const readFileAsText = async (filePath) => {
         try {
             const content = await fs.promises.readFile(filePath, "utf-8");
             return content;
@@ -30,36 +53,96 @@ export function createFileWatcher(config) {
             return null;
         }
     };
+    const readFileAsBase64 = async (filePath) => {
+        try {
+            const content = await fs.promises.readFile(filePath);
+            return content.toString("base64");
+        }
+        catch (err) {
+            logger.error(`Failed to read binary ${filePath}: ${err}`);
+            return null;
+        }
+    };
+    const getFileSize = async (filePath) => {
+        try {
+            const stat = await fs.promises.stat(filePath);
+            return stat.size;
+        }
+        catch {
+            return 0;
+        }
+    };
     const handleFileChange = async (filePath) => {
         if (!shouldWatch(filePath))
             return;
         const relativePath = path.relative(workspaceDir, filePath);
-        const content = await readFile(filePath);
-        if (content === null)
-            return;
-        const prevContent = fileContents.get(relativePath);
-        if (prevContent === content)
-            return;
-        // Always track the file even if CRDT has no diff (e.g. empty file on first scan)
-        fileContents.set(relativePath, content);
-        watchedFiles.add(relativePath);
-        const delta = await crdt.applyLocalChange(relativePath, content);
-        if (delta) {
-            logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+        const binary = isBinaryFile(filePath);
+        let content;
+        if (binary) {
+            content = await readFileAsBase64(filePath);
         }
         else {
-            logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+            content = await readFileAsText(filePath);
+        }
+        if (content === null)
+            return;
+        const hash = computeHash(content);
+        const size = await getFileSize(filePath);
+        const prev = watchedFiles.get(relativePath);
+        if (prev && prev.hash === hash)
+            return;
+        const tracked = { relativePath, isBinary: binary, hash, size };
+        watchedFiles.set(relativePath, tracked);
+        fileContents.set(relativePath, content);
+        if (!binary) {
+            const delta = await crdt.applyLocalChange(relativePath, content);
+            if (delta) {
+                logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+            }
+            else {
+                logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
+            }
+        }
+        else {
+            logger.info(`Binary file tracked: ${relativePath} (${size} bytes, ${watchedFiles.size} files watched)`);
+        }
+    };
+    const handleFileDeletion = (filePath) => {
+        if (!shouldWatch(filePath))
+            return;
+        const relativePath = path.relative(workspaceDir, filePath);
+        if (watchedFiles.has(relativePath)) {
+            watchedFiles.delete(relativePath);
+            fileContents.delete(relativePath);
+            logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
+            if (onFileDeleted) {
+                onFileDeleted(relativePath);
+            }
         }
     };
     return {
         async start() {
             logger.info(`Mesh file watcher starting: ${workspaceDir}`);
             await this.syncAllFiles();
+            const knownFiles = new Set(watchedFiles.keys());
             watcher = fs.watch(workspaceDir, { recursive: true }, async (event, filename) => {
                 if (!filename)
                     return;
                 const filePath = path.join(workspaceDir, filename);
-                if (event === "change" || event === "rename") {
+                if (event === "rename") {
+                    try {
+                        const stat = await fs.promises.stat(filePath);
+                        if (stat.isFile()) {
+                            await handleFileChange(filePath);
+                        }
+                    }
+                    catch {
+                        if (knownFiles.has(filename) || watchedFiles.has(path.relative(workspaceDir, filePath))) {
+                            handleFileDeletion(filePath);
+                        }
+                    }
+                }
+                else if (event === "change") {
                     await handleFileChange(filePath);
                 }
             });
@@ -76,7 +159,10 @@ export function createFileWatcher(config) {
             }
         },
         getWatchedFiles() {
-            return Array.from(watchedFiles);
+            return Array.from(watchedFiles.keys());
+        },
+        getManifest() {
+            return Array.from(watchedFiles.values());
         },
         async syncAllFiles() {
             const scanDir = async (dir) => {
@@ -102,6 +188,30 @@ export function createFileWatcher(config) {
             catch (err) {
                 logger.error(`Failed to sync files: ${err}`);
             }
+        },
+        async getFileContent(relativePath) {
+            const tracked = watchedFiles.get(relativePath);
+            if (!tracked)
+                return null;
+            const cached = fileContents.get(relativePath);
+            if (cached !== undefined) {
+                return { content: cached, isBinary: tracked.isBinary };
+            }
+            const filePath = path.join(workspaceDir, relativePath);
+            if (tracked.isBinary) {
+                const content = await readFileAsBase64(filePath);
+                return content ? { content, isBinary: true } : null;
+            }
+            else {
+                const content = await readFileAsText(filePath);
+                return content !== null ? { content, isBinary: false } : null;
+            }
+        },
+        get onFileDeleted() {
+            return onFileDeleted;
+        },
+        set onFileDeleted(fn) {
+            onFileDeleted = fn;
         },
     };
 }

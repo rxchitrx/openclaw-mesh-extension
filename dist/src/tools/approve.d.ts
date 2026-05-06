@@ -1,21 +1,16 @@
-import type { CRDTService } from "../crdt.js";
 import type { TransportService } from "../transport.js";
-export type BroadcastServices = {
-    crdt: CRDTService;
-    transport: TransportService;
-    getFileContent: (relativePath: string) => Promise<{
-        content: string;
-        isBinary: boolean;
-    } | null>;
-};
-export declare function createMeshBroadcastTool(services: BroadcastServices, _ctx: any): {
+export declare function createMeshApproveTool(transport: TransportService, _ctx: any): {
     label: string;
     name: string;
     description: string;
     parameters: {
         type: "object";
         properties: {
-            file: {
+            peerName: {
+                type: string;
+                description: string;
+            };
+            action: {
                 type: string;
                 description: string;
             };
@@ -23,7 +18,8 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         required: string[];
     };
     execute: (_toolCallId: string, toolParams: {
-        file?: string;
+        peerName: string;
+        action: string;
     }, _signal: any, _onUpdate: any) => Promise<{
         content: {
             type: "text";
@@ -31,23 +27,10 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            error: string;
-            deltasSent?: undefined;
-            files?: undefined;
-            peerCount?: undefined;
-            timestamp?: undefined;
-        };
-    } | {
-        content: {
-            type: "text";
-            text: string;
-        }[];
-        details: {
-            ok: boolean;
-            deltasSent: number;
+            alreadyConnected: boolean;
             error?: undefined;
-            files?: undefined;
-            peerCount?: undefined;
+            action?: undefined;
+            peerName?: undefined;
             timestamp?: undefined;
         };
     } | {
@@ -57,10 +40,23 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            deltasSent: number;
-            files: string[];
-            peerCount: number;
+            error: string;
+            alreadyConnected?: undefined;
+            action?: undefined;
+            peerName?: undefined;
+            timestamp?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            peerName: string;
             timestamp: string;
+            alreadyConnected?: undefined;
             error?: undefined;
         };
     }>;

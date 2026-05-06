@@ -1,12 +1,14 @@
 import { createCRDT, type CRDTService } from "./src/crdt.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
-import { createFileWatcher, type FileWatcherService } from "./src/file-watcher.js";
+import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
 import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
 import { createMeshStatusTool } from "./src/tools/status.js";
 import { createMeshSyncTool } from "./src/tools/sync.js";
 import { createMeshTrackTool } from "./src/tools/track.js";
-import { createTransport, type TransportService } from "./src/transport.js";
+import { createMeshApproveTool } from "./src/tools/approve.js";
+import { createMeshDiffTool } from "./src/tools/diff.js";
+import { createTransport, type TransportService, type TransportNotification } from "./src/transport.js";
 
 export type MeshConfig = {
   enabled?: boolean;
@@ -56,12 +58,19 @@ const meshPlugin = {
         fileWatcher = null;
       }
       fileWatcher = createFileWatcher({ workspaceDir: dir, crdt, logger });
+
+      fileWatcher.onFileDeleted = (relativePath: string) => {
+        transport.notifyFileDeleted(relativePath);
+        tryInjectNotification(`File deleted in tracked directory: '${relativePath}'. Connected peers will be notified.`);
+      };
+
       await fileWatcher.start();
       currentTrackDir = dir;
     };
 
     const stopFileWatcher = async () => {
       if (fileWatcher) {
+        fileWatcher.onFileDeleted = null;
         await fileWatcher.stop();
         fileWatcher = null;
       }
@@ -75,14 +84,54 @@ const meshPlugin = {
       stopFileWatcher,
     });
 
+    const getFileContent = async (relativePath: string): Promise<{ content: string; isBinary: boolean } | null> => {
+      if (!fileWatcher) return null;
+      return fileWatcher.getFileContent(relativePath);
+    };
+
+    const getLocalManifest = (): TrackedFile[] => {
+      if (!fileWatcher) return [];
+      return fileWatcher.getManifest();
+    };
+
+    const tryInjectNotification = (text: string) => {
+      try {
+        if (api.enqueueNextTurnInjection) {
+          api.enqueueNextTurnInjection({
+            sessionKey: "default",
+            text: `[mesh] ${text}`,
+            placement: "append_context",
+            ttlMs: 300000,
+          });
+        }
+      } catch (err) {
+        logger.debug(`Could not inject notification: ${err}`);
+      }
+    };
+
+    transport.setNotificationHandler((notification: TransportNotification) => {
+      tryInjectNotification(notification.message);
+    });
+
     api.registerTool((ctx: any) => createMeshDiscoverTool(discovery, ctx), { name: "mesh_discover" });
     api.registerTool(
       (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx),
       { name: "mesh_status" },
     );
-    api.registerTool((ctx: any) => createMeshBroadcastTool(crdt, ctx), { name: "mesh_broadcast" });
-    api.registerTool((ctx: any) => createMeshSyncTool(crdt, ctx), { name: "mesh_sync" });
+    api.registerTool(
+      (ctx: any) => createMeshBroadcastTool({ crdt, transport, getFileContent }, ctx),
+      { name: "mesh_broadcast" },
+    );
+    api.registerTool(
+      (ctx: any) => createMeshSyncTool({ crdt, transport, getFileContent, getLocalManifest }, ctx),
+      { name: "mesh_sync" },
+    );
     api.registerTool((ctx: any) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
+    api.registerTool((ctx: any) => createMeshApproveTool(transport, ctx), { name: "mesh_approve" });
+    api.registerTool(
+      (ctx: any) => createMeshDiffTool({ transport, getLocalManifest }, ctx),
+      { name: "mesh_diff" },
+    );
 
     api.on("gateway_start", async () => {
       try {
@@ -118,17 +167,44 @@ const meshPlugin = {
     api.on("heartbeat_prompt_contribution", async () => {
       const peers = discovery.getPeers();
       const connections = transport.getConnections();
+      const pending = transport.getPendingConnections();
       const pendingDeltas = crdt.getPendingDeltas();
 
-      logger.debug(`Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas`);
+      logger.debug(`Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas, ${pending.length} pending approvals`);
 
       try {
         await discovery.scan();
         await transport.maintainConnections();
         await crdt.syncPendingDeltas();
+
+        const discoveredPeers = discovery.getPeers();
+        for (const peer of discoveredPeers) {
+          if (!connections.includes(peer.name) && !pending.some((p) => p.peerName === peer.name)) {
+            await transport.connectToPeer(peer);
+          }
+        }
       } catch (err) {
         logger.warn(`Heartbeat error: ${err}`);
       }
+
+      const parts: string[] = [];
+
+      if (pending.length > 0) {
+        const names = pending.map((p) => p.peerName).join(", ");
+        parts.push(`${pending.length} peer(s) awaiting approval: ${names}. Say 'approve <name>' or 'deny <name>'.`);
+      }
+
+      if (pendingDeltas.length > 0) {
+        parts.push(`${pendingDeltas.length} pending file change(s) not yet broadcast. Say 'broadcast' to push to peers.`);
+      }
+
+      if (parts.length > 0) {
+        return {
+          appendContext: `[mesh heartbeat] ${parts.join(" ")}`,
+        };
+      }
+
+      return {};
     });
 
     logger.info("Mesh extension registered successfully");

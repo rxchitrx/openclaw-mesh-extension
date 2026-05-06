@@ -11,7 +11,9 @@
       "mesh_status",
       "mesh_broadcast",
       "mesh_sync",
-      "mesh_track"
+      "mesh_track",
+      "mesh_approve",
+      "mesh_diff"
     ]
   },
   "configSchema": {

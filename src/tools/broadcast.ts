@@ -1,10 +1,18 @@
-import type { CRDTService } from "../crdt.js";
+import type { CRDTService, Delta } from "../crdt.js";
+import type { TransportService } from "../transport.js";
+import type { FileWatcherService } from "../file-watcher.js";
 
-export function createMeshBroadcastTool(crdt: CRDTService, _ctx: any) {
+export type BroadcastServices = {
+  crdt: CRDTService;
+  transport: TransportService;
+  getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
+};
+
+export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) {
   return {
     label: "Mesh Broadcast",
     name: "mesh_broadcast",
-    description: "Force push local changes to all connected mesh peers",
+    description: "Push local file changes to all connected mesh peers. Say 'broadcast' for all files, or 'broadcast index.ts' for a specific file.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -16,54 +24,85 @@ export function createMeshBroadcastTool(crdt: CRDTService, _ctx: any) {
       required: [] as string[],
     },
     execute: async (_toolCallId: string, toolParams: { file?: string }, _signal: any, _onUpdate: any) => {
+      const { crdt, transport, getFileContent } = services;
       const pendingDeltas = crdt.getPendingDeltas();
-      const now = new Date().toISOString();
       const file = toolParams?.file;
+      const now = new Date().toISOString();
+      const connections = transport.getConnections();
 
-      let message = `MESH BROADCAST\n`;
-      message += `Timestamp: ${now}\n\n`;
+      if (connections.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No approved peers connected. Approve a peer connection first." }],
+          details: { ok: false, error: "no_peers" },
+        };
+      }
 
       if (pendingDeltas.length === 0) {
-        message += `Nothing to broadcast. All files are in sync with peers.\n`;
-        message += `Edit a file in the workspace to create changes.`;
-      } else {
-        const toBroadcast = file
-          ? pendingDeltas.filter((d: any) => d.file === file)
-          : pendingDeltas;
+        return {
+          content: [{ type: "text" as const, text: "Nothing to broadcast. All files are in sync with CRDT state." }],
+          details: { ok: true, deltasSent: 0 },
+        };
+      }
 
-        if (toBroadcast.length === 0) {
-          message += `No pending changes for file: ${file}\n\n`;
-          message += `Files with pending changes:\n`;
-          const files = [...new Set(pendingDeltas.map((d: any) => d.file))];
-          for (const f of files) {
-            message += `  ${f}\n`;
+      const toBroadcast = file
+        ? pendingDeltas.filter((d: Delta) => d.file === file)
+        : pendingDeltas;
+
+      if (toBroadcast.length === 0 && file) {
+        return {
+          content: [{ type: "text" as const, text: `No pending changes for file: ${file}` }],
+          details: { ok: true, deltasSent: 0 },
+        };
+      }
+
+      let sentCount = 0;
+      let sentFiles: string[] = [];
+
+      for (const delta of toBroadcast) {
+        if (delta.isBinary) {
+          const fileData = await getFileContent(delta.file);
+          if (fileData) {
+            transport.broadcast({
+              type: "file_content",
+              path: delta.file,
+              content: fileData.content,
+              isBinary: true,
+              from: delta.author,
+            });
+            sentFiles.push(delta.file);
+            sentCount++;
           }
         } else {
-          const fileList = [...new Set(toBroadcast.map((d: any) => d.file))];
-
-          message += `Preparing broadcast\n`;
-          message += `  Deltas to send: ${toBroadcast.length}\n`;
-          message += `  Files affected: ${fileList.length}\n\n`;
-
-          message += `FILES:\n`;
-          for (const f of fileList) {
-            const deltas = toBroadcast.filter((d: any) => d.file === f);
-            const totalChanges = deltas.reduce((sum: number, d: any) => sum + d.changes.length, 0);
-            message += `  ${f} (${deltas.length} deltas, ${totalChanges} changes)\n`;
-          }
-
-          message += `\nBROADCAST RESULT\n`;
-          message += `  Status: Queued for next heartbeat\n`;
-          message += `  Target: All connected peers\n`;
+          transport.broadcast({
+            type: "delta",
+            delta,
+            file: delta.file,
+          });
+          sentFiles.push(delta.file);
+          sentCount++;
         }
+      }
+
+      const fileList = [...new Set(sentFiles)];
+      let message = `MESH BROADCAST\n`;
+      message += `Timestamp: ${now}\n`;
+      message += `Peers: ${connections.length}\n`;
+      message += `Deltas sent: ${sentCount}\n`;
+      message += `Files affected: ${fileList.length}\n\n`;
+
+      for (const f of fileList) {
+        const deltasForFile = toBroadcast.filter((d: Delta) => d.file === f);
+        const isBinary = deltasForFile.some((d: Delta) => d.isBinary);
+        message += `  ${f} ${isBinary ? "[binary]" : ""} (${deltasForFile.length} deltas)\n`;
       }
 
       return {
         content: [{ type: "text" as const, text: message }],
         details: {
           ok: true,
-          deltas: pendingDeltas,
-          files: [...new Set(pendingDeltas.map((d: any) => d.file))],
+          deltasSent: sentCount,
+          files: fileList,
+          peerCount: connections.length,
           timestamp: now,
         },
       };

@@ -6,6 +6,7 @@ export type CRDTConfig = {
 export type FileState = {
   path: string;
   content: string;
+  isBinary: boolean;
   lastModified: number;
   author: string;
 };
@@ -15,17 +16,21 @@ export type Delta = {
   changes: any[];
   timestamp: number;
   author: string;
+  isBinary: boolean;
 };
 
 export type CRDTService = {
   getState: (file?: string) => any;
-  applyLocalChange: (file: string, content: string) => Promise<Delta | null>;
+  applyLocalChange: (file: string, content: string, isBinary?: boolean) => Promise<Delta | null>;
   applyRemoteDelta: (delta: Delta, file: string) => void;
+  applyRemoteBinary: (file: string, content: string) => void;
   mergeState: (state: any, file: string) => void;
   getFileContent: (file: string) => string | null;
+  isFileBinary: (file: string) => boolean;
   getFiles: () => string[];
   syncPendingDeltas: () => Promise<void>;
   getPendingDeltas: () => Delta[];
+  getPendingDeltasForFile: (file: string) => Delta[];
 };
 
 export function createCRDT(config: CRDTConfig): CRDTService {
@@ -33,6 +38,7 @@ export function createCRDT(config: CRDTConfig): CRDTService {
 
   const docs = new Map<string, any>();
   const docInitialized = new Set<string>();
+  const binaryFiles = new Map<string, string>();
   const pendingDeltas: Delta[] = [];
 
   const getOrCreateDoc = async (file: string): Promise<any> => {
@@ -51,10 +57,18 @@ export function createCRDT(config: CRDTConfig): CRDTService {
   return {
     async getState(file?: string) {
       if (file) {
+        if (binaryFiles.has(file)) {
+          return {
+            file,
+            content: binaryFiles.get(file),
+            isBinary: true,
+          };
+        }
         const docData = await getOrCreateDoc(file);
         return {
           file,
           content: docData.text.toString(),
+          isBinary: false,
           vector: docData.doc.store.clientVectors,
         };
       }
@@ -63,14 +77,42 @@ export function createCRDT(config: CRDTConfig): CRDTService {
       for (const [path, docData] of docs) {
         state[path] = {
           content: docData.text.toString(),
+          isBinary: false,
           vector: docData.doc.store.clientVectors,
+        };
+      }
+      for (const [path, content] of binaryFiles) {
+        state[path] = {
+          content,
+          isBinary: true,
         };
       }
       return state;
     },
 
-    async applyLocalChange(file: string, content: string): Promise<Delta | null> {
+    async applyLocalChange(file: string, content: string, isBinary = false): Promise<Delta | null> {
       try {
+        if (isBinary) {
+          const isNew = !binaryFiles.has(file);
+          const prev = binaryFiles.get(file);
+          if (prev === content && !isNew) return null;
+
+          binaryFiles.set(file, content);
+          docInitialized.add(file);
+
+          const delta: Delta = {
+            file,
+            changes: [{ type: "replace", content }],
+            timestamp: Date.now(),
+            author: nodeName,
+            isBinary: true,
+          };
+
+          pendingDeltas.push(delta);
+          logger.info(`Local binary change: ${file} (${content.length} chars base64, ${pendingDeltas.length} pending deltas)`);
+          return delta;
+        }
+
         const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
@@ -93,6 +135,7 @@ export function createCRDT(config: CRDTConfig): CRDTService {
           changes: [{ type: "replace", content }],
           timestamp: Date.now(),
           author: nodeName,
+          isBinary: false,
         };
 
         pendingDeltas.push(delta);
@@ -106,6 +149,12 @@ export function createCRDT(config: CRDTConfig): CRDTService {
 
     async applyRemoteDelta(delta: Delta, file: string) {
       try {
+        if (delta.isBinary) {
+          binaryFiles.set(file, delta.changes[0]?.content || "");
+          logger.info(`Remote binary applied: ${file} from ${delta.author}`);
+          return;
+        }
+
         const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
@@ -118,14 +167,29 @@ export function createCRDT(config: CRDTConfig): CRDTService {
           }
         });
 
+        docInitialized.add(file);
+
         logger.info(`Remote delta applied: ${file} from ${delta.author}`);
       } catch (err) {
         logger.error(`Failed to apply remote delta: ${err}`);
       }
     },
 
+    applyRemoteBinary(file: string, content: string) {
+      binaryFiles.set(file, content);
+      docInitialized.add(file);
+      logger.info(`Remote binary stored: ${file}`);
+    },
+
     async mergeState(state: any, file: string) {
       try {
+        if (state.isBinary) {
+          binaryFiles.set(file, state.content);
+          docInitialized.add(file);
+          logger.info(`Merged binary state for ${file}`);
+          return;
+        }
+
         const docData = await getOrCreateDoc(file);
         const { doc, text } = docData;
 
@@ -136,6 +200,7 @@ export function createCRDT(config: CRDTConfig): CRDTService {
           });
         }
 
+        docInitialized.add(file);
         logger.info(`Merged state for ${file}`);
       } catch (err) {
         logger.error(`Failed to merge state: ${err}`);
@@ -143,6 +208,10 @@ export function createCRDT(config: CRDTConfig): CRDTService {
     },
 
     getFileContent(file: string): string | null {
+      if (binaryFiles.has(file)) {
+        return binaryFiles.get(file)!;
+      }
+
       if (!docs.has(file)) {
         return null;
       }
@@ -151,8 +220,12 @@ export function createCRDT(config: CRDTConfig): CRDTService {
       return docData.text.toString();
     },
 
+    isFileBinary(file: string): boolean {
+      return binaryFiles.has(file);
+    },
+
     getFiles(): string[] {
-      return Array.from(docs.keys());
+      return [...new Set([...docs.keys(), ...binaryFiles.keys()])];
     },
 
     async syncPendingDeltas() {
@@ -166,6 +239,10 @@ export function createCRDT(config: CRDTConfig): CRDTService {
 
     getPendingDeltas() {
       return [...pendingDeltas];
+    },
+
+    getPendingDeltasForFile(file: string) {
+      return pendingDeltas.filter((d) => d.file === file);
     },
   };
 }

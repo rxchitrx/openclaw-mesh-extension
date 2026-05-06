@@ -2,6 +2,7 @@ export function createCRDT(config) {
     const { nodeName, logger } = config;
     const docs = new Map();
     const docInitialized = new Set();
+    const binaryFiles = new Map();
     const pendingDeltas = [];
     const getOrCreateDoc = async (file) => {
         if (!docs.has(file)) {
@@ -16,10 +17,18 @@ export function createCRDT(config) {
     return {
         async getState(file) {
             if (file) {
+                if (binaryFiles.has(file)) {
+                    return {
+                        file,
+                        content: binaryFiles.get(file),
+                        isBinary: true,
+                    };
+                }
                 const docData = await getOrCreateDoc(file);
                 return {
                     file,
                     content: docData.text.toString(),
+                    isBinary: false,
                     vector: docData.doc.store.clientVectors,
                 };
             }
@@ -27,13 +36,38 @@ export function createCRDT(config) {
             for (const [path, docData] of docs) {
                 state[path] = {
                     content: docData.text.toString(),
+                    isBinary: false,
                     vector: docData.doc.store.clientVectors,
+                };
+            }
+            for (const [path, content] of binaryFiles) {
+                state[path] = {
+                    content,
+                    isBinary: true,
                 };
             }
             return state;
         },
-        async applyLocalChange(file, content) {
+        async applyLocalChange(file, content, isBinary = false) {
             try {
+                if (isBinary) {
+                    const isNew = !binaryFiles.has(file);
+                    const prev = binaryFiles.get(file);
+                    if (prev === content && !isNew)
+                        return null;
+                    binaryFiles.set(file, content);
+                    docInitialized.add(file);
+                    const delta = {
+                        file,
+                        changes: [{ type: "replace", content }],
+                        timestamp: Date.now(),
+                        author: nodeName,
+                        isBinary: true,
+                    };
+                    pendingDeltas.push(delta);
+                    logger.info(`Local binary change: ${file} (${content.length} chars base64, ${pendingDeltas.length} pending deltas)`);
+                    return delta;
+                }
                 const docData = await getOrCreateDoc(file);
                 const { doc, text } = docData;
                 const currentContent = text.toString();
@@ -51,6 +85,7 @@ export function createCRDT(config) {
                     changes: [{ type: "replace", content }],
                     timestamp: Date.now(),
                     author: nodeName,
+                    isBinary: false,
                 };
                 pendingDeltas.push(delta);
                 logger.info(`Local file change: ${file} (${content.length} chars, ${pendingDeltas.length} pending deltas)`);
@@ -63,6 +98,11 @@ export function createCRDT(config) {
         },
         async applyRemoteDelta(delta, file) {
             try {
+                if (delta.isBinary) {
+                    binaryFiles.set(file, delta.changes[0]?.content || "");
+                    logger.info(`Remote binary applied: ${file} from ${delta.author}`);
+                    return;
+                }
                 const docData = await getOrCreateDoc(file);
                 const { doc, text } = docData;
                 doc.transact(() => {
@@ -73,14 +113,26 @@ export function createCRDT(config) {
                         }
                     }
                 });
+                docInitialized.add(file);
                 logger.info(`Remote delta applied: ${file} from ${delta.author}`);
             }
             catch (err) {
                 logger.error(`Failed to apply remote delta: ${err}`);
             }
         },
+        applyRemoteBinary(file, content) {
+            binaryFiles.set(file, content);
+            docInitialized.add(file);
+            logger.info(`Remote binary stored: ${file}`);
+        },
         async mergeState(state, file) {
             try {
+                if (state.isBinary) {
+                    binaryFiles.set(file, state.content);
+                    docInitialized.add(file);
+                    logger.info(`Merged binary state for ${file}`);
+                    return;
+                }
                 const docData = await getOrCreateDoc(file);
                 const { doc, text } = docData;
                 if (state.content !== undefined) {
@@ -89,6 +141,7 @@ export function createCRDT(config) {
                         text.insert(0, state.content);
                     });
                 }
+                docInitialized.add(file);
                 logger.info(`Merged state for ${file}`);
             }
             catch (err) {
@@ -96,14 +149,20 @@ export function createCRDT(config) {
             }
         },
         getFileContent(file) {
+            if (binaryFiles.has(file)) {
+                return binaryFiles.get(file);
+            }
             if (!docs.has(file)) {
                 return null;
             }
             const docData = docs.get(file);
             return docData.text.toString();
         },
+        isFileBinary(file) {
+            return binaryFiles.has(file);
+        },
         getFiles() {
-            return Array.from(docs.keys());
+            return [...new Set([...docs.keys(), ...binaryFiles.keys()])];
         },
         async syncPendingDeltas() {
             const now = Date.now();
@@ -114,6 +173,9 @@ export function createCRDT(config) {
         },
         getPendingDeltas() {
             return [...pendingDeltas];
+        },
+        getPendingDeltasForFile(file) {
+            return pendingDeltas.filter((d) => d.file === file);
         },
     };
 }

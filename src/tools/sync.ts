@@ -1,61 +1,207 @@
 import type { CRDTService } from "../crdt.js";
+import type { TransportService } from "../transport.js";
+import type { TrackedFile, FileWatcherService } from "../file-watcher.js";
 
-export function createMeshSyncTool(crdt: CRDTService, _ctx: any) {
+export type SyncServices = {
+  crdt: CRDTService;
+  transport: TransportService;
+  getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
+  getLocalManifest: () => TrackedFile[];
+};
+
+export function createMeshSyncTool(services: SyncServices, _ctx: any) {
   return {
     label: "Mesh Sync",
     name: "mesh_sync",
-    description: "Request sync from all connected mesh peers",
+    description: "Sync files with a connected peer. Exchange manifests, push or pull specific files. Say 'sync with node-123', 'push index.ts to node-123', or 'pull index.ts from node-123'.",
     parameters: {
       type: "object" as const,
       properties: {
+        action: {
+          type: "string",
+          description: "One of: 'manifest' (exchange manifests), 'push' (send a file), 'pull' (request a file), 'push-all' (send all local-only files), 'pull-all' (request all remote-only files)",
+        },
+        peerName: {
+          type: "string",
+          description: "Name of the peer to sync with",
+        },
         file: {
           type: "string",
-          description: "Specific file to sync (optional, syncs all files if not specified)",
+          description: "Specific file to push or pull (for push/pull actions)",
         },
       },
       required: [] as string[],
     },
-    execute: async (_toolCallId: string, toolParams: { file?: string }, _signal: any, _onUpdate: any) => {
-      const file = toolParams?.file;
-      const files = file ? [file] : crdt.getFiles();
+    execute: async (_toolCallId: string, toolParams: { action?: string; peerName?: string; file?: string }, _signal: any, _onUpdate: any) => {
+      const { crdt, transport, getFileContent, getLocalManifest } = services;
+      const { action, peerName, file } = toolParams;
+      const connections = transport.getConnections();
       const now = new Date().toISOString();
 
-      let message = `MESH SYNC REQUEST\n`;
-      message += `Timestamp: ${now}\n\n`;
+      if (connections.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No approved peers connected. Approve a peer connection first." }],
+          details: { ok: false, error: "no_peers" },
+        };
+      }
 
-      if (files.length === 0) {
-        if (file) {
-          message += `File not found: ${file}\n`;
-          message += `File must exist in workspace CRDT to sync.\n`;
-        } else {
-          message += `No files to sync. Local CRDT is empty.\n`;
-          message += `Create files in workspace to start syncing.\n`;
-        }
-      } else {
-        message += `SYNC REQUEST\n`;
-        message += `  Mode: ${file ? "SINGLE FILE" : "ALL FILES"}\n`;
-        message += `  Files to sync: ${files.length}\n\n`;
+      if (!action || action === "manifest") {
+        const target = peerName || connections[0];
 
-        message += `FILES:\n`;
-        for (const f of files) {
-          const content = crdt.getFileContent(f);
-          const preview = content ? content.substring(0, 50) + "..." : "(empty)";
-          message += `  ${f}: ${preview}\n`;
+        if (!connections.includes(target)) {
+          return {
+            content: [{ type: "text" as const, text: `Peer '${target}' is not connected. Connected peers: ${connections.join(", ")}` }],
+            details: { ok: false, error: "not_connected" },
+          };
         }
 
-        message += `\nSYNC STATUS\n`;
-        message += `  Request sent to transport layer\n`;
-        message += `  Will request state from all connected peers on next heartbeat cycle\n`;
-        message += `  Remote changes will be merged automatically on receipt.\n`;
+        const localManifest = getLocalManifest();
+        transport.sendLocalManifest(target, localManifest);
+        transport.requestManifest(target);
+
+        return {
+          content: [{ type: "text" as const, text: `Manifest sent to '${target}' (${localManifest.length} files). Requested their manifest in return. Use 'diff with ${target}' to see differences.` }],
+          details: { ok: true, action: "manifest", peerName: target, localFileCount: localManifest.length },
+        };
+      }
+
+      if (!peerName) {
+        return {
+          content: [{ type: "text" as const, text: `Specify a peer name. Connected peers: ${connections.join(", ")}` }],
+          details: { ok: false, error: "no_peer" },
+        };
+      }
+
+      if (!connections.includes(peerName)) {
+        return {
+          content: [{ type: "text" as const, text: `Peer '${peerName}' is not connected. Connected peers: ${connections.join(", ")}` }],
+          details: { ok: false, error: "not_connected" },
+        };
+      }
+
+      if (action === "push") {
+        if (!file) {
+          return {
+            content: [{ type: "text" as const, text: "Specify a file to push. e.g. 'push index.ts to node-123'" }],
+            details: { ok: false, error: "no_file" },
+          };
+        }
+
+        const fileData = await getFileContent(file);
+        if (!fileData) {
+          return {
+            content: [{ type: "text" as const, text: `File '${file}' not found locally.` }],
+            details: { ok: false, error: "file_not_found" },
+          };
+        }
+
+        transport.sendFileContent(peerName, file, fileData.content, fileData.isBinary);
+
+        return {
+          content: [{ type: "text" as const, text: `Pushed '${file}' to '${peerName}' (${fileData.content.length} chars, ${fileData.isBinary ? "binary" : "text"}).` }],
+          details: { ok: true, action: "push", peerName, file },
+        };
+      }
+
+      if (action === "pull") {
+        if (!file) {
+          return {
+            content: [{ type: "text" as const, text: "Specify a file to pull. e.g. 'pull index.ts from node-123'" }],
+            details: { ok: false, error: "no_file" },
+          };
+        }
+
+        transport.requestFileContent(peerName, file);
+
+        return {
+          content: [{ type: "text" as const, text: `Requested '${file}' from '${peerName}'. File will be received and applied.` }],
+          details: { ok: true, action: "pull", peerName, file },
+        };
+      }
+
+      if (action === "push-all") {
+        const remoteManifest = transport.getRemoteManifest(peerName);
+        const localManifest = getLocalManifest();
+
+        if (!remoteManifest) {
+          return {
+            content: [{ type: "text" as const, text: `No manifest from '${peerName}'. Exchange manifests first with 'sync with ${peerName}'.` }],
+            details: { ok: false, error: "no_manifest" },
+          };
+        }
+
+        const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
+        const toPush: TrackedFile[] = [];
+
+        for (const local of localManifest) {
+          const remote = remoteMap.get(local.relativePath);
+          if (!remote || remote.hash !== local.hash) {
+            toPush.push(local);
+          }
+        }
+
+        if (toPush.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `All files are already in sync with '${peerName}'.` }],
+            details: { ok: true, action: "push-all", filesSent: 0 },
+          };
+        }
+
+        let sentCount = 0;
+        for (const f of toPush) {
+          const fileData = await getFileContent(f.relativePath);
+          if (fileData) {
+            transport.sendFileContent(peerName, f.relativePath, fileData.content, fileData.isBinary);
+            sentCount++;
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: `Pushed ${sentCount} files to '${peerName}'.` }],
+          details: { ok: true, action: "push-all", peerName, filesSent: sentCount },
+        };
+      }
+
+      if (action === "pull-all") {
+        const remoteManifest = transport.getRemoteManifest(peerName);
+
+        if (!remoteManifest) {
+          return {
+            content: [{ type: "text" as const, text: `No manifest from '${peerName}'. Exchange manifests first with 'sync with ${peerName}'.` }],
+            details: { ok: false, error: "no_manifest" },
+          };
+        }
+
+        const localMap = new Map(getLocalManifest().map((f) => [f.relativePath, f]));
+        const toPull: TrackedFile[] = [];
+
+        for (const remote of remoteManifest) {
+          const local = localMap.get(remote.relativePath);
+          if (!local || local.hash !== remote.hash) {
+            toPull.push(remote);
+          }
+        }
+
+        if (toPull.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `All files are already in sync with '${peerName}'.` }],
+            details: { ok: true, action: "pull-all", filesRequested: 0 },
+          };
+        }
+
+        for (const f of toPull) {
+          transport.requestFileContent(peerName, f.relativePath);
+        }
+
+        return {
+          content: [{ type: "text" as const, text: `Requested ${toPull.length} files from '${peerName}'. Files will be received and applied.` }],
+          details: { ok: true, action: "pull-all", peerName, filesRequested: toPull.length, files: toPull.map((f) => f.relativePath) },
+        };
       }
 
       return {
-        content: [{ type: "text" as const, text: message }],
-        details: {
-          ok: true,
-          files,
-          timestamp: now,
-        },
+        content: [{ type: "text" as const, text: `Unknown action '${action}'. Use: manifest, push, pull, push-all, pull-all` }],
+        details: { ok: false, error: "invalid_action" },
       };
     },
   };

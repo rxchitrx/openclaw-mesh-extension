@@ -1,21 +1,17 @@
-import type { CRDTService } from "../crdt.js";
 import type { TransportService } from "../transport.js";
-export type BroadcastServices = {
-    crdt: CRDTService;
+import type { TrackedFile } from "../file-watcher.js";
+export type DiffServices = {
     transport: TransportService;
-    getFileContent: (relativePath: string) => Promise<{
-        content: string;
-        isBinary: boolean;
-    } | null>;
+    getLocalManifest: () => TrackedFile[];
 };
-export declare function createMeshBroadcastTool(services: BroadcastServices, _ctx: any): {
+export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
     label: string;
     name: string;
     description: string;
     parameters: {
         type: "object";
         properties: {
-            file: {
+            peerName: {
                 type: string;
                 description: string;
             };
@@ -23,7 +19,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         required: string[];
     };
     execute: (_toolCallId: string, toolParams: {
-        file?: string;
+        peerName?: string;
     }, _signal: any, _onUpdate: any) => Promise<{
         content: {
             type: "text";
@@ -32,10 +28,12 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         details: {
             ok: boolean;
             error: string;
-            deltasSent?: undefined;
-            files?: undefined;
-            peerCount?: undefined;
-            timestamp?: undefined;
+            peersWithManifests?: undefined;
+            peerName?: undefined;
+            localOnly?: undefined;
+            remoteOnly?: undefined;
+            modified?: undefined;
+            inSyncCount?: undefined;
         };
     } | {
         content: {
@@ -44,11 +42,13 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            deltasSent: number;
+            peersWithManifests: string[];
             error?: undefined;
-            files?: undefined;
-            peerCount?: undefined;
-            timestamp?: undefined;
+            peerName?: undefined;
+            localOnly?: undefined;
+            remoteOnly?: undefined;
+            modified?: undefined;
+            inSyncCount?: undefined;
         };
     } | {
         content: {
@@ -57,11 +57,13 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            deltasSent: number;
-            files: string[];
-            peerCount: number;
-            timestamp: string;
+            peerName: string;
+            localOnly: string[];
+            remoteOnly: string[];
+            modified: string[];
+            inSyncCount: number;
             error?: undefined;
+            peersWithManifests?: undefined;
         };
     }>;
 };
