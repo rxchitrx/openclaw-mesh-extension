@@ -9,6 +9,8 @@ import { createMeshTrackTool } from "./src/tools/track.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
 import { createTransport, type TransportService, type TransportNotification } from "./src/transport.js";
+import * as fs from "fs";
+import * as path from "path";
 
 export type MeshConfig = {
   enabled?: boolean;
@@ -121,6 +123,35 @@ const meshPlugin = {
         trackingFileCount: manifest.length,
         trackingFiles: manifest.map((f) => f.relativePath),
       };
+    });
+
+    transport.setFileContentProvider(async (relativePath: string) => {
+      return getFileContent(relativePath);
+    });
+
+    transport.setManifestProvider(() => {
+      return getLocalManifest();
+    });
+
+    transport.setFileWriter(async (relativePath: string, content: string, isBinary: boolean) => {
+      if (!currentTrackDir) {
+        logger.warn(`Cannot write file ${relativePath}: no track directory set`);
+        return;
+      }
+      const filePath = path.join(currentTrackDir, relativePath);
+      const dir = path.dirname(filePath);
+      try {
+        await fs.promises.mkdir(dir, { recursive: true });
+        if (isBinary) {
+          await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+        } else {
+          await fs.promises.writeFile(filePath, content, "utf-8");
+        }
+        logger.info(`Wrote received file to disk: ${filePath}`);
+      } catch (err) {
+        logger.error(`Failed to write file ${filePath}: ${err}`);
+        throw err;
+      }
     });
 
     api.registerTool((ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });

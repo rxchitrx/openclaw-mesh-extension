@@ -52,5 +52,11 @@ export type TransportService = {
     maintainConnections: () => Promise<void>;
     getNodeInfo: (peerName: string) => NodeInfo | null;
     setNodeInfoProvider: (provider: () => NodeInfo) => void;
+    setFileContentProvider: (provider: (relativePath: string) => Promise<{
+        content: string;
+        isBinary: boolean;
+    } | null>) => void;
+    setManifestProvider: (provider: () => TrackedFile[]) => void;
+    setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
 };
 export declare function createTransport(config: TransportConfig): TransportService;

@@ -9,6 +9,8 @@ import { createMeshTrackTool } from "./src/tools/track.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
 import { createTransport } from "./src/transport.js";
+import * as fs from "fs";
+import * as path from "path";
 const meshPlugin = {
     id: "mesh",
     name: "OpenClaw Mesh",
@@ -101,6 +103,34 @@ const meshPlugin = {
                 trackingFileCount: manifest.length,
                 trackingFiles: manifest.map((f) => f.relativePath),
             };
+        });
+        transport.setFileContentProvider(async (relativePath) => {
+            return getFileContent(relativePath);
+        });
+        transport.setManifestProvider(() => {
+            return getLocalManifest();
+        });
+        transport.setFileWriter(async (relativePath, content, isBinary) => {
+            if (!currentTrackDir) {
+                logger.warn(`Cannot write file ${relativePath}: no track directory set`);
+                return;
+            }
+            const filePath = path.join(currentTrackDir, relativePath);
+            const dir = path.dirname(filePath);
+            try {
+                await fs.promises.mkdir(dir, { recursive: true });
+                if (isBinary) {
+                    await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+                }
+                else {
+                    await fs.promises.writeFile(filePath, content, "utf-8");
+                }
+                logger.info(`Wrote received file to disk: ${filePath}`);
+            }
+            catch (err) {
+                logger.error(`Failed to write file ${filePath}: ${err}`);
+                throw err;
+            }
         });
         api.registerTool((ctx) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
         api.registerTool((ctx) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx), { name: "mesh_status" });

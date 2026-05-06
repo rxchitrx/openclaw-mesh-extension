@@ -58,6 +58,9 @@ export type TransportService = {
   maintainConnections: () => Promise<void>;
   getNodeInfo: (peerName: string) => NodeInfo | null;
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
+  setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
+  setManifestProvider: (provider: () => TrackedFile[]) => void;
+  setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
 };
 
 export function createTransport(config: TransportConfig): TransportService {
@@ -69,8 +72,13 @@ export function createTransport(config: TransportConfig): TransportService {
   const approvedPeers = new Set<string>();
   const remoteNodeInfo = new Map<string, NodeInfo>();
   let nodeInfoProvider: (() => NodeInfo) | null = null;
+  let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
+  let manifestProvider: (() => TrackedFile[]) | null = null;
+  let fileWriter: ((relativePath: string, content: string, isBinary: boolean) => Promise<void>) | null = null;
   let server: any = null;
   let notificationHandler: ((notification: TransportNotification) => void) | null = null;
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  const PING_INTERVAL_MS = 30000;
 
   const notify = (notification: TransportNotification) => {
     if (notificationHandler) {
@@ -78,7 +86,7 @@ export function createTransport(config: TransportConfig): TransportService {
     }
   };
 
-  const handleMessage = (peerName: string, data: string, approved: boolean) => {
+  const handleMessage = async (peerName: string, data: string, approved: boolean) => {
     try {
       const message = JSON.parse(data);
 
@@ -188,8 +196,15 @@ export function createTransport(config: TransportConfig): TransportService {
         case "manifest_request":
           if (!approved) return;
           {
-            const manifestCb = message._manifestCallback;
-            if (manifestCb) manifestCb();
+            if (manifestProvider) {
+              const localManifest = manifestProvider();
+              sendToPeer(peerName, {
+                type: "manifest",
+                files: localManifest,
+                from: nodeName,
+              });
+              logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+            }
           }
           break;
 
@@ -197,32 +212,54 @@ export function createTransport(config: TransportConfig): TransportService {
           if (!approved) return;
           {
             const { path: filePath, content, isBinary } = message;
+
             if (isBinary) {
-              crdt.applyLocalChange(filePath, content);
-              logger.info(`Received binary file: ${filePath} from ${peerName}`);
+              crdt.applyRemoteBinary(filePath, content);
             } else {
-              const delta = crdt.applyLocalChange(filePath, content);
-              if (delta) {
-                const localContent = crdt.getFileContent(filePath);
-                if (localContent !== null && localContent !== content) {
-                  notify({
-                    type: "conflict",
-                    message: `Conflict: both you and '${peerName}' edited '${filePath}'. CRDT merged — you may want to review.`,
-                    peerName,
-                    data: { file: filePath },
-                  });
-                }
-              }
-              logger.info(`Received file: ${filePath} from ${peerName}`);
+              crdt.applyRemoteDelta(
+                { file: filePath, changes: [{ type: "replace", content }], timestamp: Date.now(), author: message.from || peerName, isBinary: false },
+                filePath,
+              );
             }
+
+            if (fileWriter) {
+              try {
+                await fileWriter(filePath, content, isBinary);
+                logger.info(`Wrote received file to disk: ${filePath} from ${peerName}`);
+              } catch (err) {
+                logger.error(`Failed to write received file ${filePath}: ${err}`);
+              }
+            } else {
+              logger.info(`Received file (no writer): ${filePath} from ${peerName}`);
+            }
+
+            notify({
+              type: "file_content" as any,
+              message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
+              peerName,
+              data: { file: filePath },
+            });
           }
           break;
 
         case "file_content_request":
           if (!approved) return;
           {
-            const manifestCb2 = message._contentCallback;
-            if (manifestCb2) manifestCb2(message.path);
+            if (fileContentProvider) {
+              const fileData = await fileContentProvider(message.path);
+              if (fileData) {
+                sendToPeer(peerName, {
+                  type: "file_content",
+                  path: message.path,
+                  content: fileData.content,
+                  isBinary: fileData.isBinary,
+                  from: nodeName,
+                });
+                logger.info(`Sent requested file ${message.path} to ${peerName}`);
+              } else {
+                logger.warn(`Requested file not found: ${message.path}`);
+              }
+            }
           }
           break;
 
@@ -267,13 +304,24 @@ export function createTransport(config: TransportConfig): TransportService {
 
   const setupSocket = (socket: any, peerName: string, isIncoming: boolean) => {
     socket.on("message", (data: Buffer) => {
+      const raw = data.toString();
+      if (raw === "__ping__") {
+        if (socket.readyState === 1) socket.send("__pong__");
+        return;
+      }
+      if (raw === "__pong__") {
+        const conn = connections.get(peerName);
+        if (conn) conn.isAlive = true;
+        return;
+      }
+
       const pending = pendingConnections.get(peerName);
       if (pending) {
-        handleMessage(peerName, data.toString(), false);
+        handleMessage(peerName, raw, false);
       } else {
         const conn = connections.get(peerName);
         if (conn && conn.approved) {
-          handleMessage(peerName, data.toString(), true);
+          handleMessage(peerName, raw, true);
         }
       }
     });
@@ -354,6 +402,26 @@ export function createTransport(config: TransportConfig): TransportService {
         });
 
         logger.info(`Mesh transport server started on port ${port}`);
+
+        keepaliveTimer = setInterval(() => {
+          for (const [name, conn] of connections) {
+            if (!conn.isAlive) {
+              logger.warn(`Peer ${name} missed ping, closing connection`);
+              conn.socket.terminate();
+              connections.delete(name);
+              notify({
+                type: "peer_disconnected",
+                message: `Peer '${name}' disconnected (missed ping, ${connections.size} remaining).`,
+                peerName: name,
+              });
+              continue;
+            }
+            conn.isAlive = false;
+            if (conn.socket.readyState === 1) {
+              conn.socket.send("__ping__");
+            }
+          }
+        }, PING_INTERVAL_MS);
       } catch (err) {
         logger.error(`Failed to start transport server: ${err}`);
         throw err;
@@ -361,6 +429,11 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     async stop() {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+
       for (const [, conn] of connections) {
         conn.socket.close();
       }
@@ -579,6 +652,18 @@ export function createTransport(config: TransportConfig): TransportService {
 
     setNodeInfoProvider(provider: () => NodeInfo) {
       nodeInfoProvider = provider;
+    },
+
+    setFileContentProvider(provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) {
+      fileContentProvider = provider;
+    },
+
+    setManifestProvider(provider: () => TrackedFile[]) {
+      manifestProvider = provider;
+    },
+
+    setFileWriter(writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) {
+      fileWriter = writer;
     },
   };
 }

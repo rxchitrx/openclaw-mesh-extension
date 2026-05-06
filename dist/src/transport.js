@@ -6,14 +6,19 @@ export function createTransport(config) {
     const approvedPeers = new Set();
     const remoteNodeInfo = new Map();
     let nodeInfoProvider = null;
+    let fileContentProvider = null;
+    let manifestProvider = null;
+    let fileWriter = null;
     let server = null;
     let notificationHandler = null;
+    let keepaliveTimer = null;
+    const PING_INTERVAL_MS = 30000;
     const notify = (notification) => {
         if (notificationHandler) {
             notificationHandler(notification);
         }
     };
-    const handleMessage = (peerName, data, approved) => {
+    const handleMessage = async (peerName, data, approved) => {
         try {
             const message = JSON.parse(data);
             switch (message.type) {
@@ -122,9 +127,15 @@ export function createTransport(config) {
                     if (!approved)
                         return;
                     {
-                        const manifestCb = message._manifestCallback;
-                        if (manifestCb)
-                            manifestCb();
+                        if (manifestProvider) {
+                            const localManifest = manifestProvider();
+                            sendToPeer(peerName, {
+                                type: "manifest",
+                                files: localManifest,
+                                from: nodeName,
+                            });
+                            logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+                        }
                     }
                     break;
                 case "file_content":
@@ -133,33 +144,51 @@ export function createTransport(config) {
                     {
                         const { path: filePath, content, isBinary } = message;
                         if (isBinary) {
-                            crdt.applyLocalChange(filePath, content);
-                            logger.info(`Received binary file: ${filePath} from ${peerName}`);
+                            crdt.applyRemoteBinary(filePath, content);
                         }
                         else {
-                            const delta = crdt.applyLocalChange(filePath, content);
-                            if (delta) {
-                                const localContent = crdt.getFileContent(filePath);
-                                if (localContent !== null && localContent !== content) {
-                                    notify({
-                                        type: "conflict",
-                                        message: `Conflict: both you and '${peerName}' edited '${filePath}'. CRDT merged — you may want to review.`,
-                                        peerName,
-                                        data: { file: filePath },
-                                    });
-                                }
-                            }
-                            logger.info(`Received file: ${filePath} from ${peerName}`);
+                            crdt.applyRemoteDelta({ file: filePath, changes: [{ type: "replace", content }], timestamp: Date.now(), author: message.from || peerName, isBinary: false }, filePath);
                         }
+                        if (fileWriter) {
+                            try {
+                                await fileWriter(filePath, content, isBinary);
+                                logger.info(`Wrote received file to disk: ${filePath} from ${peerName}`);
+                            }
+                            catch (err) {
+                                logger.error(`Failed to write received file ${filePath}: ${err}`);
+                            }
+                        }
+                        else {
+                            logger.info(`Received file (no writer): ${filePath} from ${peerName}`);
+                        }
+                        notify({
+                            type: "file_content",
+                            message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
+                            peerName,
+                            data: { file: filePath },
+                        });
                     }
                     break;
                 case "file_content_request":
                     if (!approved)
                         return;
                     {
-                        const manifestCb2 = message._contentCallback;
-                        if (manifestCb2)
-                            manifestCb2(message.path);
+                        if (fileContentProvider) {
+                            const fileData = await fileContentProvider(message.path);
+                            if (fileData) {
+                                sendToPeer(peerName, {
+                                    type: "file_content",
+                                    path: message.path,
+                                    content: fileData.content,
+                                    isBinary: fileData.isBinary,
+                                    from: nodeName,
+                                });
+                                logger.info(`Sent requested file ${message.path} to ${peerName}`);
+                            }
+                            else {
+                                logger.warn(`Requested file not found: ${message.path}`);
+                            }
+                        }
                     }
                     break;
                 case "file_deleted":
@@ -201,14 +230,26 @@ export function createTransport(config) {
     };
     const setupSocket = (socket, peerName, isIncoming) => {
         socket.on("message", (data) => {
+            const raw = data.toString();
+            if (raw === "__ping__") {
+                if (socket.readyState === 1)
+                    socket.send("__pong__");
+                return;
+            }
+            if (raw === "__pong__") {
+                const conn = connections.get(peerName);
+                if (conn)
+                    conn.isAlive = true;
+                return;
+            }
             const pending = pendingConnections.get(peerName);
             if (pending) {
-                handleMessage(peerName, data.toString(), false);
+                handleMessage(peerName, raw, false);
             }
             else {
                 const conn = connections.get(peerName);
                 if (conn && conn.approved) {
-                    handleMessage(peerName, data.toString(), true);
+                    handleMessage(peerName, raw, true);
                 }
             }
         });
@@ -278,6 +319,25 @@ export function createTransport(config) {
                     }
                 });
                 logger.info(`Mesh transport server started on port ${port}`);
+                keepaliveTimer = setInterval(() => {
+                    for (const [name, conn] of connections) {
+                        if (!conn.isAlive) {
+                            logger.warn(`Peer ${name} missed ping, closing connection`);
+                            conn.socket.terminate();
+                            connections.delete(name);
+                            notify({
+                                type: "peer_disconnected",
+                                message: `Peer '${name}' disconnected (missed ping, ${connections.size} remaining).`,
+                                peerName: name,
+                            });
+                            continue;
+                        }
+                        conn.isAlive = false;
+                        if (conn.socket.readyState === 1) {
+                            conn.socket.send("__ping__");
+                        }
+                    }
+                }, PING_INTERVAL_MS);
             }
             catch (err) {
                 logger.error(`Failed to start transport server: ${err}`);
@@ -285,6 +345,10 @@ export function createTransport(config) {
             }
         },
         async stop() {
+            if (keepaliveTimer) {
+                clearInterval(keepaliveTimer);
+                keepaliveTimer = null;
+            }
             for (const [, conn] of connections) {
                 conn.socket.close();
             }
@@ -475,6 +539,15 @@ export function createTransport(config) {
         },
         setNodeInfoProvider(provider) {
             nodeInfoProvider = provider;
+        },
+        setFileContentProvider(provider) {
+            fileContentProvider = provider;
+        },
+        setManifestProvider(provider) {
+            manifestProvider = provider;
+        },
+        setFileWriter(writer) {
+            fileWriter = writer;
         },
     };
 }
