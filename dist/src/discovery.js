@@ -16,9 +16,7 @@ function getLocalIP() {
             }
         }
     }
-    if (nonInternal.length === 0)
-        return "127.0.0.1";
-    return nonInternal[nonInternal.length - 1].address;
+    return nonInternal.length === 0 ? "127.0.0.1" : nonInternal[nonInternal.length - 1].address;
 }
 function getSubnet(ip) {
     const parts = ip.split(".");
@@ -48,9 +46,7 @@ function probePort(ip, port) {
 function probePing(ip) {
     const args = process.platform === "darwin" ? ["-c", "1", "-t", "1", ip] : ["-c", "1", "-W", "1", ip];
     return new Promise((resolve) => {
-        execFile("ping", args, { timeout: PING_TIMEOUT_MS }, (err) => {
-            resolve(!err);
-        });
+        execFile("ping", args, { timeout: PING_TIMEOUT_MS }, (err) => resolve(!err));
     });
 }
 async function scanSubnet(subnet, port, localIP) {
@@ -67,9 +63,8 @@ async function scanSubnet(subnet, port, localIP) {
             if (!ip)
                 continue;
             const [portOpen, pingOk] = await Promise.all([probePort(ip, port), probePing(ip)]);
-            if (portOpen || pingOk) {
+            if (portOpen || pingOk)
                 results.push({ ip, portOpen, pingOk });
-            }
         }
     });
     await Promise.all(workers);
@@ -86,12 +81,7 @@ export function createDiscovery(config) {
             try {
                 const { getResponder } = await import("@homebridge/ciao");
                 const responder = getResponder();
-                ciaoService = responder.createService({
-                    name: nodeName,
-                    type: MESH_SERVICE_TYPE,
-                    port: port,
-                    txt: { node: nodeName, version: "1.0.0" },
-                });
+                ciaoService = responder.createService({ name: nodeName, type: MESH_SERVICE_TYPE, port, txt: { node: nodeName, version: "1.0.0" } });
                 await ciaoService.advertise();
                 logger.info(`mDNS publisher started: ${nodeName} (${MESH_SERVICE_TYPE})`);
             }
@@ -116,14 +106,7 @@ export function createDiscovery(config) {
                         existing.lastMdnsSeen = Date.now();
                         return;
                     }
-                    peers.set(svc.name, {
-                        name: svc.name,
-                        host,
-                        port: peerPort,
-                        lastSeen: Date.now(),
-                        source: "mdns",
-                        lastMdnsSeen: Date.now(),
-                    });
+                    peers.set(svc.name, { name: svc.name, host, port: peerPort, lastSeen: Date.now(), source: "mdns", lastMdnsSeen: Date.now() });
                     logger.info(`Peer discovered (mDNS): ${svc.name} at ${host}:${peerPort}`);
                 });
                 browser.on("down", (svc) => {
@@ -133,13 +116,12 @@ export function createDiscovery(config) {
                     }
                 });
                 browser.start();
-                logger.info(`mDNS browser started`);
+                logger.info("mDNS browser started");
             }
             catch (err) {
                 logger.error(`mDNS browse failed: ${err}`);
             }
-            const localIP = getLocalIP();
-            logger.info(`Mesh discovery started: ${nodeName} at ${localIP}:${port}`);
+            logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port}`);
         },
         async stop() {
             if (browser) {
@@ -175,8 +157,8 @@ export function createDiscovery(config) {
                 logger.info(`Scanning subnet ${subnet}.0/24 for mesh nodes on port ${SCAN_PORT}...`);
                 try {
                     const found = await scanSubnet(subnet, SCAN_PORT, localIP);
-                    for (const foundPeer of found) {
-                        const { ip, portOpen, pingOk } = foundPeer;
+                    for (const entry of found) {
+                        const { ip, portOpen, pingOk } = entry;
                         const existingPeer = Array.from(peers.values()).find((p) => p.host === ip);
                         if (existingPeer) {
                             existingPeer.lastSeen = Date.now();
@@ -214,15 +196,46 @@ export function createDiscovery(config) {
                     logger.warn(`Stale peer removed: ${name}`);
                 }
             }
-            if (staleCount > 0) {
+            if (staleCount > 0)
                 logger.info(`Cleaned ${staleCount} stale peer(s), ${peers.size} remaining`);
-            }
         },
         getPeers() {
             return Array.from(peers.values());
         },
         getLocalNode() {
             return { name: nodeName, host: getLocalIP(), port };
+        },
+        notePeer(peer) {
+            if (!peer.name || peer.name === nodeName || !peer.host)
+                return;
+            const existing = peers.get(peer.name);
+            const peerPort = peer.port || port;
+            const now = Date.now();
+            const source = peer.source || "transport";
+            if (existing) {
+                existing.host = peer.host;
+                existing.port = peerPort;
+                existing.lastSeen = now;
+                existing.source = source;
+                if (source === "transport")
+                    existing.lastTransportSeen = now;
+                if (source === "mdns")
+                    existing.lastMdnsSeen = now;
+                if (source === "subnet-scan")
+                    existing.lastScanSeen = now;
+                return;
+            }
+            peers.set(peer.name, {
+                name: peer.name,
+                host: peer.host,
+                port: peerPort,
+                lastSeen: now,
+                source,
+                lastTransportSeen: source === "transport" ? now : undefined,
+                lastMdnsSeen: source === "mdns" ? now : undefined,
+                lastScanSeen: source === "subnet-scan" ? now : undefined,
+            });
+            logger.info(`Peer noted from transport activity: ${peer.name} at ${peer.host}:${peerPort}`);
         },
     };
 }

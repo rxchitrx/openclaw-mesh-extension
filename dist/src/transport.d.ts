@@ -1,10 +1,10 @@
-import type { CRDTService } from "./crdt.js";
+import type { SyncStateService } from "./sync-state.js";
 import type { PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 export type TransportConfig = {
     nodeName: string;
     port: number;
-    crdt: CRDTService;
+    syncState: SyncStateService;
     logger: any;
 };
 export type Connection = {
@@ -12,7 +12,6 @@ export type Connection = {
     socket: any;
     isAlive: boolean;
     approved: boolean;
-    manifest?: TrackedFile[];
 };
 export type PendingConnection = {
     peerName: string;
@@ -27,9 +26,10 @@ export type NodeInfo = {
     trackingFiles: string[];
 };
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received" | "node_info_received";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "file_conflict" | "file_received" | "manifest_received" | "node_info_received";
     message: string;
     peerName?: string;
+    filePath?: string;
     data?: any;
 };
 export type TransportService = {
@@ -58,5 +58,6 @@ export type TransportService = {
     } | null>) => void;
     setManifestProvider: (provider: () => TrackedFile[]) => void;
     setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
+    setIgnoreNextChange: (fn: (relativePath: string) => void) => void;
 };
 export declare function createTransport(config: TransportConfig): TransportService;

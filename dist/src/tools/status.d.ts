@@ -1,6 +1,6 @@
 import type { DiscoveryService } from "../discovery.js";
 import type { TransportService } from "../transport.js";
-import type { CRDTService } from "../crdt.js";
+import type { SyncStateService } from "../sync-state.js";
 import type { FileWatcherService } from "../file-watcher.js";
 type TrackState = {
     fileWatcher: FileWatcherService | null;
@@ -11,7 +11,7 @@ type TrackState = {
 type MeshServices = {
     discovery: DiscoveryService;
     transport: TransportService;
-    crdt: CRDTService;
+    syncState: SyncStateService;
     getTrackState: () => TrackState;
 };
 export declare function createMeshStatusTool(services: MeshServices, _ctx: any): {
@@ -40,10 +40,8 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                 peerCount: number;
                 connectionCount: number;
                 pendingApprovalCount: number;
-                syncedFiles: number;
                 watchedFiles: number;
-                pendingDeltas: number;
-                binaryFiles: number;
+                pendingChanges: number;
                 health: string;
                 timestamp: string;
             };

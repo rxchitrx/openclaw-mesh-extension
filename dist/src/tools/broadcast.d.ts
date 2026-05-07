@@ -1,12 +1,15 @@
-import type { CRDTService } from "../crdt.js";
+import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
+import type { TrackedFile } from "../file-watcher.js";
 export type BroadcastServices = {
-    crdt: CRDTService;
+    syncState: SyncStateService;
     transport: TransportService;
     getFileContent: (relativePath: string) => Promise<{
         content: string;
         isBinary: boolean;
     } | null>;
+    getLocalManifest: () => TrackedFile[];
+    nodeName: string;
 };
 export declare function createMeshBroadcastTool(services: BroadcastServices, _ctx: any): {
     label: string;
@@ -32,7 +35,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         details: {
             ok: boolean;
             error: string;
-            deltasSent?: undefined;
+            filesSent?: undefined;
             files?: undefined;
             peerCount?: undefined;
             timestamp?: undefined;
@@ -44,7 +47,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            deltasSent: number;
+            filesSent: number;
             error?: undefined;
             files?: undefined;
             peerCount?: undefined;
@@ -57,7 +60,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            deltasSent: number;
+            filesSent: number;
             files: string[];
             peerCount: number;
             timestamp: string;

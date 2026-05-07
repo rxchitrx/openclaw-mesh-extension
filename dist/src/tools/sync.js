@@ -8,7 +8,7 @@ export function createMeshSyncTool(services, _ctx) {
             properties: {
                 action: {
                     type: "string",
-                    description: "One of: 'manifest' (exchange manifests), 'push' (send a file), 'pull' (request a file), 'push-all' (send all local-only files), 'pull-all' (request all remote-only files)",
+                    description: "One of: 'manifest' (exchange manifests), 'push' (send a file), 'pull' (request a file), 'push-all' (send all changed files), 'pull-all' (request all changed files)",
                 },
                 peerName: {
                     type: "string",
@@ -18,12 +18,16 @@ export function createMeshSyncTool(services, _ctx) {
                     type: "string",
                     description: "Specific file to push or pull (for push/pull actions)",
                 },
+                force: {
+                    type: "boolean",
+                    description: "Force push/pull even if there's a conflict (overwrites local or remote)",
+                },
             },
             required: [],
         },
         execute: async (_toolCallId, toolParams, _signal, _onUpdate) => {
-            const { crdt, transport, getFileContent, getLocalManifest } = services;
-            const { action, peerName, file } = toolParams;
+            const { syncState, transport, getFileContent, getLocalManifest } = services;
+            const { action, peerName, file, force } = toolParams;
             const connections = transport.getConnections();
             const now = new Date().toISOString();
             if (connections.length === 0) {
@@ -44,7 +48,7 @@ export function createMeshSyncTool(services, _ctx) {
                 transport.sendLocalManifest(target, localManifest);
                 transport.requestManifest(target);
                 return {
-                    content: [{ type: "text", text: `Manifest sent to '${target}' (${localManifest.length} files). Requested their manifest in return. Use 'diff with ${target}' to see differences.` }],
+                    content: [{ type: "text", text: `Manifest exchanged with '${target}' (${localManifest.length} local files). Use 'diff with ${target}' to see differences.` }],
                     details: { ok: true, action: "manifest", peerName: target, localFileCount: localManifest.length },
                 };
             }
@@ -87,10 +91,19 @@ export function createMeshSyncTool(services, _ctx) {
                         details: { ok: false, error: "no_file" },
                     };
                 }
+                if (force) {
+                    syncState.markForceAllow(file);
+                }
+                if (!force && syncState.isLocallyModified(file)) {
+                    return {
+                        content: [{ type: "text", text: `Conflict: '${file}' has local modifications. Pulling would overwrite your changes. Use force=true to override, or review with 'diff with ${peerName}'.` }],
+                        details: { ok: false, error: "conflict", file },
+                    };
+                }
                 transport.requestFileContent(peerName, file);
                 return {
-                    content: [{ type: "text", text: `Requested '${file}' from '${peerName}'. File will be received and applied.` }],
-                    details: { ok: true, action: "pull", peerName, file },
+                    content: [{ type: "text", text: `Requested '${file}' from '${peerName}'. File will be received and written.${force ? " (forced — local changes may be overwritten)" : ""}` }],
+                    details: { ok: true, action: "pull", peerName, file, forced: !!force },
                 };
             }
             if (action === "push-all") {
@@ -104,9 +117,13 @@ export function createMeshSyncTool(services, _ctx) {
                 }
                 const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
                 const toPush = [];
+                const conflicts = [];
                 for (const local of localManifest) {
                     const remote = remoteMap.get(local.relativePath);
-                    if (!remote || remote.hash !== local.hash) {
+                    if (!remote) {
+                        toPush.push(local);
+                    }
+                    else if (remote.hash !== local.hash) {
                         toPush.push(local);
                     }
                 }
@@ -125,8 +142,8 @@ export function createMeshSyncTool(services, _ctx) {
                     }
                 }
                 return {
-                    content: [{ type: "text", text: `Pushed ${sentCount} files to '${peerName}'.` }],
-                    details: { ok: true, action: "push-all", peerName, filesSent: sentCount },
+                    content: [{ type: "text", text: `Pushed ${sentCount} file(s) to '${peerName}'.` }],
+                    details: { ok: true, action: "push-all", peerName, filesSent: sentCount, files: toPush.map((f) => f.relativePath) },
                 };
             }
             if (action === "pull-all") {
@@ -139,13 +156,25 @@ export function createMeshSyncTool(services, _ctx) {
                 }
                 const localMap = new Map(getLocalManifest().map((f) => [f.relativePath, f]));
                 const toPull = [];
+                const conflicts = [];
                 for (const remote of remoteManifest) {
                     const local = localMap.get(remote.relativePath);
-                    if (!local || local.hash !== remote.hash) {
+                    if (!local) {
                         toPull.push(remote);
                     }
+                    else if (local.hash !== remote.hash) {
+                        if (!force && syncState.isLocallyModified(remote.relativePath)) {
+                            conflicts.push(remote.relativePath);
+                        }
+                        else {
+                            if (force && syncState.isLocallyModified(remote.relativePath)) {
+                                syncState.markForceAllow(remote.relativePath);
+                            }
+                            toPull.push(remote);
+                        }
+                    }
                 }
-                if (toPull.length === 0) {
+                if (toPull.length === 0 && conflicts.length === 0) {
                     return {
                         content: [{ type: "text", text: `All files are already in sync with '${peerName}'.` }],
                         details: { ok: true, action: "pull-all", filesRequested: 0 },
@@ -154,9 +183,13 @@ export function createMeshSyncTool(services, _ctx) {
                 for (const f of toPull) {
                     transport.requestFileContent(peerName, f.relativePath);
                 }
+                let message = `Requested ${toPull.length} file(s) from '${peerName}'. They will be received and written.`;
+                if (conflicts.length > 0) {
+                    message += `\n\nSkipped ${conflicts.length} conflicted file(s) with local modifications: ${conflicts.join(", ")}. Use force=true to override.`;
+                }
                 return {
-                    content: [{ type: "text", text: `Requested ${toPull.length} files from '${peerName}'. Files will be received and applied.` }],
-                    details: { ok: true, action: "pull-all", peerName, filesRequested: toPull.length, files: toPull.map((f) => f.relativePath) },
+                    content: [{ type: "text", text: message }],
+                    details: { ok: true, action: "pull-all", peerName, filesRequested: toPull.length, conflicts, files: toPull.map((f) => f.relativePath) },
                 };
             }
             return {

@@ -1,9 +1,9 @@
-import type { CRDTService } from "../crdt.js";
+import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
-import type { TrackedFile, FileWatcherService } from "../file-watcher.js";
+import type { TrackedFile } from "../file-watcher.js";
 
 export type SyncServices = {
-  crdt: CRDTService;
+  syncState: SyncStateService;
   transport: TransportService;
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
   getLocalManifest: () => TrackedFile[];
@@ -19,7 +19,7 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
       properties: {
         action: {
           type: "string",
-          description: "One of: 'manifest' (exchange manifests), 'push' (send a file), 'pull' (request a file), 'push-all' (send all local-only files), 'pull-all' (request all remote-only files)",
+          description: "One of: 'manifest' (exchange manifests), 'push' (send a file), 'pull' (request a file), 'push-all' (send all changed files), 'pull-all' (request all changed files)",
         },
         peerName: {
           type: "string",
@@ -29,12 +29,16 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
           type: "string",
           description: "Specific file to push or pull (for push/pull actions)",
         },
+        force: {
+          type: "boolean",
+          description: "Force push/pull even if there's a conflict (overwrites local or remote)",
+        },
       },
       required: [] as string[],
     },
-    execute: async (_toolCallId: string, toolParams: { action?: string; peerName?: string; file?: string }, _signal: any, _onUpdate: any) => {
-      const { crdt, transport, getFileContent, getLocalManifest } = services;
-      const { action, peerName, file } = toolParams;
+    execute: async (_toolCallId: string, toolParams: { action?: string; peerName?: string; file?: string; force?: boolean }, _signal: any, _onUpdate: any) => {
+      const { syncState, transport, getFileContent, getLocalManifest } = services;
+      const { action, peerName, file, force } = toolParams;
       const connections = transport.getConnections();
       const now = new Date().toISOString();
 
@@ -60,7 +64,7 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
         transport.requestManifest(target);
 
         return {
-          content: [{ type: "text" as const, text: `Manifest sent to '${target}' (${localManifest.length} files). Requested their manifest in return. Use 'diff with ${target}' to see differences.` }],
+          content: [{ type: "text" as const, text: `Manifest exchanged with '${target}' (${localManifest.length} local files). Use 'diff with ${target}' to see differences.` }],
           details: { ok: true, action: "manifest", peerName: target, localFileCount: localManifest.length },
         };
       }
@@ -111,11 +115,22 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
           };
         }
 
+        if (force) {
+          syncState.markForceAllow(file);
+        }
+
+        if (!force && syncState.isLocallyModified(file)) {
+          return {
+            content: [{ type: "text" as const, text: `Conflict: '${file}' has local modifications. Pulling would overwrite your changes. Use force=true to override, or review with 'diff with ${peerName}'.` }],
+            details: { ok: false, error: "conflict", file },
+          };
+        }
+
         transport.requestFileContent(peerName, file);
 
         return {
-          content: [{ type: "text" as const, text: `Requested '${file}' from '${peerName}'. File will be received and applied.` }],
-          details: { ok: true, action: "pull", peerName, file },
+          content: [{ type: "text" as const, text: `Requested '${file}' from '${peerName}'. File will be received and written.${force ? " (forced — local changes may be overwritten)" : ""}` }],
+          details: { ok: true, action: "pull", peerName, file, forced: !!force },
         };
       }
 
@@ -132,10 +147,13 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
 
         const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
         const toPush: TrackedFile[] = [];
+        const conflicts: TrackedFile[] = [];
 
         for (const local of localManifest) {
           const remote = remoteMap.get(local.relativePath);
-          if (!remote || remote.hash !== local.hash) {
+          if (!remote) {
+            toPush.push(local);
+          } else if (remote.hash !== local.hash) {
             toPush.push(local);
           }
         }
@@ -157,8 +175,8 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
         }
 
         return {
-          content: [{ type: "text" as const, text: `Pushed ${sentCount} files to '${peerName}'.` }],
-          details: { ok: true, action: "push-all", peerName, filesSent: sentCount },
+          content: [{ type: "text" as const, text: `Pushed ${sentCount} file(s) to '${peerName}'.` }],
+          details: { ok: true, action: "push-all", peerName, filesSent: sentCount, files: toPush.map((f) => f.relativePath) },
         };
       }
 
@@ -174,15 +192,25 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
 
         const localMap = new Map(getLocalManifest().map((f) => [f.relativePath, f]));
         const toPull: TrackedFile[] = [];
+        const conflicts: string[] = [];
 
         for (const remote of remoteManifest) {
           const local = localMap.get(remote.relativePath);
-          if (!local || local.hash !== remote.hash) {
+          if (!local) {
             toPull.push(remote);
+          } else if (local.hash !== remote.hash) {
+            if (!force && syncState.isLocallyModified(remote.relativePath)) {
+              conflicts.push(remote.relativePath);
+            } else {
+              if (force && syncState.isLocallyModified(remote.relativePath)) {
+                syncState.markForceAllow(remote.relativePath);
+              }
+              toPull.push(remote);
+            }
           }
         }
 
-        if (toPull.length === 0) {
+        if (toPull.length === 0 && conflicts.length === 0) {
           return {
             content: [{ type: "text" as const, text: `All files are already in sync with '${peerName}'.` }],
             details: { ok: true, action: "pull-all", filesRequested: 0 },
@@ -193,9 +221,14 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
           transport.requestFileContent(peerName, f.relativePath);
         }
 
+        let message = `Requested ${toPull.length} file(s) from '${peerName}'. They will be received and written.`;
+        if (conflicts.length > 0) {
+          message += `\n\nSkipped ${conflicts.length} conflicted file(s) with local modifications: ${conflicts.join(", ")}. Use force=true to override.`;
+        }
+
         return {
-          content: [{ type: "text" as const, text: `Requested ${toPull.length} files from '${peerName}'. Files will be received and applied.` }],
-          details: { ok: true, action: "pull-all", peerName, filesRequested: toPull.length, files: toPull.map((f) => f.relativePath) },
+          content: [{ type: "text" as const, text: message }],
+          details: { ok: true, action: "pull-all", peerName, filesRequested: toPull.length, conflicts, files: toPull.map((f) => f.relativePath) },
         };
       }
 

@@ -3,11 +3,11 @@ export type PeerInfo = {
     host: string;
     port: number;
     lastSeen: number;
-    source?: "mdns" | "transport" | "subnet-scan" | "ping";
-    lastPingSeen?: number;
-    lastMdnsSeen?: number;
+    source: "mdns" | "transport" | "subnet-scan" | "ping";
     lastTransportSeen?: number;
+    lastMdnsSeen?: number;
     lastScanSeen?: number;
+    lastPingSeen?: number;
 };
 export type DiscoveryConfig = {
     nodeName: string;
@@ -24,5 +24,11 @@ export type DiscoveryService = {
         host: string;
         port: number;
     };
+    notePeer: (peer: {
+        name: string;
+        host: string;
+        port?: number;
+        source?: "mdns" | "transport" | "subnet-scan";
+    }) => void;
 };
 export declare function createDiscovery(config: DiscoveryConfig): DiscoveryService;

@@ -1,11 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import type { CRDTService } from "./crdt.js";
+import type { SyncStateService } from "./sync-state.js";
 
 export type FileWatcherConfig = {
   workspaceDir: string;
-  crdt: CRDTService;
+  syncState: SyncStateService;
   logger: any;
 };
 
@@ -23,6 +23,7 @@ export type FileWatcherService = {
   getManifest: () => TrackedFile[];
   syncAllFiles: () => Promise<void>;
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
+  ignoreNextChange: (relativePath: string) => void;
   onFileDeleted: ((relativePath: string) => void) | null;
 };
 
@@ -39,12 +40,14 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 export function createFileWatcher(config: FileWatcherConfig): FileWatcherService {
-  const { workspaceDir, crdt, logger } = config;
+  const { workspaceDir, syncState, logger } = config;
 
   const watchedFiles = new Map<string, TrackedFile>();
   const fileContents = new Map<string, string>();
+  const ignoreChanges = new Map<string, number>();
   let watcher: fs.FSWatcher | null = null;
   let onFileDeleted: ((relativePath: string) => void) | null = null;
+  const IGNORE_WINDOW_MS = 2000;
 
   const shouldWatch = (filePath: string): boolean => {
     for (const pattern of IGNORE_PATTERNS) {
@@ -74,8 +77,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
   const readFileAsText = async (filePath: string): Promise<string | null> => {
     try {
-      const content = await fs.promises.readFile(filePath, "utf-8");
-      return content;
+      return await fs.promises.readFile(filePath, "utf-8");
     } catch (err) {
       logger.error(`Failed to read ${filePath}: ${err}`);
       return null;
@@ -105,6 +107,31 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     if (!shouldWatch(filePath)) return;
 
     const relativePath = path.relative(workspaceDir, filePath);
+
+    const ignoreUntil = ignoreChanges.get(relativePath);
+    if (ignoreUntil && Date.now() < ignoreUntil) {
+      const binary = isBinaryFile(filePath);
+      let content: string | null;
+      if (binary) {
+        content = await readFileAsBase64(filePath);
+      } else {
+        content = await readFileAsText(filePath);
+      }
+      if (content !== null) {
+        const hash = computeHash(content);
+        const size = await getFileSize(filePath);
+        watchedFiles.set(relativePath, { relativePath, isBinary: binary, hash, size });
+        fileContents.set(relativePath, content);
+        syncState.recordSyncedHash(relativePath, hash);
+        logger.debug(`Updated cache for received file: ${relativePath}`);
+      }
+      return;
+    }
+
+    if (ignoreUntil) {
+      ignoreChanges.delete(relativePath);
+    }
+
     const binary = isBinaryFile(filePath);
 
     let content: string | null;
@@ -126,16 +153,8 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     watchedFiles.set(relativePath, tracked);
     fileContents.set(relativePath, content);
 
-    if (!binary) {
-      const delta = await crdt.applyLocalChange(relativePath, content);
-      if (delta) {
-        logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
-      } else {
-        logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
-      }
-    } else {
-      logger.info(`Binary file tracked: ${relativePath} (${size} bytes, ${watchedFiles.size} files watched)`);
-    }
+    syncState.recordLocalChange(relativePath, hash, binary);
+    logger.info(`File change detected: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
   };
 
   const handleFileDeletion = (filePath: string) => {
@@ -145,6 +164,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     if (watchedFiles.has(relativePath)) {
       watchedFiles.delete(relativePath);
       fileContents.delete(relativePath);
+      syncState.removeFile(relativePath);
       logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
 
       if (onFileDeleted) {
@@ -159,7 +179,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
       await this.syncAllFiles();
 
-      const knownFiles = new Set(watchedFiles.keys());
+      syncState.markAllSynced();
 
       watcher = fs.watch(workspaceDir, { recursive: true }, async (event, filename) => {
         if (!filename) return;
@@ -173,7 +193,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
               await handleFileChange(filePath);
             }
           } catch {
-            if (knownFiles.has(filename) || watchedFiles.has(path.relative(workspaceDir, filePath))) {
+            if (watchedFiles.has(path.relative(workspaceDir, filePath))) {
               handleFileDeletion(filePath);
             }
           }
@@ -249,6 +269,10 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
         const content = await readFileAsText(filePath);
         return content !== null ? { content, isBinary: false } : null;
       }
+    },
+
+    ignoreNextChange(relativePath: string) {
+      ignoreChanges.set(relativePath, Date.now() + IGNORE_WINDOW_MS);
     },
 
     get onFileDeleted() {

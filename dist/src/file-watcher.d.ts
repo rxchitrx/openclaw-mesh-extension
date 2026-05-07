@@ -1,7 +1,7 @@
-import type { CRDTService } from "./crdt.js";
+import type { SyncStateService } from "./sync-state.js";
 export type FileWatcherConfig = {
     workspaceDir: string;
-    crdt: CRDTService;
+    syncState: SyncStateService;
     logger: any;
 };
 export type TrackedFile = {
@@ -20,6 +20,7 @@ export type FileWatcherService = {
         content: string;
         isBinary: boolean;
     } | null>;
+    ignoreNextChange: (relativePath: string) => void;
     onFileDeleted: ((relativePath: string) => void) | null;
 };
 export declare function createFileWatcher(config: FileWatcherConfig): FileWatcherService;

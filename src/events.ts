@@ -121,7 +121,7 @@ export function summarizeMeshEvents(events: MeshEventRecord[]): string {
       parts.push(`${group.count} ${group.prefix} events.`);
     }
   }
-  return `[mesh] ${parts.join(" ")}`;
+  return `[mesh] IMPORTANT — You MUST immediately tell the user about the following mesh event(s). Do NOT keep this to yourself or wait for them to ask. Notify them now: ${parts.join(" ")}`;
 }
 
 export function createMeshEventStore(): MeshEventStore {

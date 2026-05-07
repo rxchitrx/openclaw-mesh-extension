@@ -39,7 +39,6 @@ export function createMeshConnectionsTool(
         for (const peerName of connections) {
           const manifest = transport.getRemoteManifest(peerName);
           const info = transport.getNodeInfo(peerName);
-          const applied = transport.getRemoteAppliedFiles(peerName);
           const lastEvent = recentEvents.find((event) => event.peerName === peerName);
           message += `  ${peerName}`;
           if (manifest) {
@@ -48,9 +47,6 @@ export function createMeshConnectionsTool(
           if (info) {
             const trackDir = info.trackingDir || "not tracking";
             message += ` | tracking: ${trackDir} (${info.trackingFileCount} files)`;
-          }
-          if (applied.length > 0) {
-            message += ` | remote applied: ${applied.length}`;
           }
           if (lastEvent) {
             message += ` | last event: ${lastEvent.kind}`;

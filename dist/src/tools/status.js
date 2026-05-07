@@ -9,15 +9,14 @@ export function createMeshStatusTool(services, _ctx) {
             required: [],
         },
         execute: async (_toolCallId, _toolParams, _signal, _onUpdate) => {
-            const { discovery, transport, crdt, getTrackState } = services;
+            const { discovery, transport, syncState, getTrackState } = services;
             const { fileWatcher, currentTrackDir } = getTrackState();
             const localNode = discovery.getLocalNode();
             const peers = discovery.getPeers();
             const connections = transport.getConnections();
             const pending = transport.getPendingConnections();
-            const files = crdt.getFiles();
-            const pendingDeltas = crdt.getPendingDeltas();
             const watchedFiles = fileWatcher?.getWatchedFiles() ?? [];
+            const pendingChanges = syncState.getPendingChanges();
             const now = new Date().toISOString();
             let message = `MESH STATUS\n`;
             message += `Timestamp: ${now}\n\n`;
@@ -49,18 +48,8 @@ export function createMeshStatusTool(services, _ctx) {
                     if (info) {
                         const dirStr = info.trackingDir || "not tracking";
                         message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
-                        if (info.trackingFiles.length > 0) {
-                            message += ` | files: ${info.trackingFiles.join(", ")}`;
-                        }
                     }
-                    message += manifest ? ` | remote manifest: ${manifest.length} files` : " | remote manifest: none";
-                    if (manifest && info) {
-                        const manifestFiles = new Set(manifest.map((file) => file.relativePath));
-                        const remoteFiles = new Set(info.trackingFiles);
-                        const localOnly = [...remoteFiles].filter((file) => !manifestFiles.has(file)).length;
-                        const remoteOnly = [...manifestFiles].filter((file) => !remoteFiles.has(file)).length;
-                        message += ` | delta: ${localOnly} local-only / ${remoteOnly} remote-only`;
-                    }
+                    message += manifest ? ` | manifest: ${manifest.length} files` : " | manifest: none";
                     message += `\n`;
                 }
             }
@@ -73,14 +62,9 @@ export function createMeshStatusTool(services, _ctx) {
             message += `\n`;
             message += `FILE SYNC\n`;
             message += `  Watched: ${watchedFiles.length}\n`;
-            message += `  In CRDT: ${files.length}\n`;
-            message += `  Pending deltas: ${pendingDeltas.length}\n`;
-            const binaryCount = files.filter((f) => crdt.isFileBinary(f)).length;
-            if (binaryCount > 0) {
-                message += `  Binary files: ${binaryCount}\n`;
-            }
+            message += `  Pending changes: ${pendingChanges.length}\n`;
             const health = connections.length > 0 ? "HEALTHY" : (peers.length > 0 ? "PARTIAL" : "STANDALONE");
-            message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingDeltas.length === 0 ? "IN SYNC" : `${pendingDeltas.length} PENDING`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
+            message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
             return {
                 content: [{ type: "text", text: message }],
                 details: {
@@ -91,10 +75,8 @@ export function createMeshStatusTool(services, _ctx) {
                         peerCount: peers.length,
                         connectionCount: connections.length,
                         pendingApprovalCount: pending.length,
-                        syncedFiles: files.length,
                         watchedFiles: watchedFiles.length,
-                        pendingDeltas: pendingDeltas.length,
-                        binaryFiles: binaryCount,
+                        pendingChanges: pendingChanges.length,
                         health,
                         timestamp: now,
                     },

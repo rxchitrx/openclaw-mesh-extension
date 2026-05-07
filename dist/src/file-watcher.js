@@ -12,11 +12,13 @@ const TEXT_EXTENSIONS = new Set([
     ".lock", ".log", ".conf", ".cfg",
 ]);
 export function createFileWatcher(config) {
-    const { workspaceDir, crdt, logger } = config;
+    const { workspaceDir, syncState, logger } = config;
     const watchedFiles = new Map();
     const fileContents = new Map();
+    const ignoreChanges = new Map();
     let watcher = null;
     let onFileDeleted = null;
+    const IGNORE_WINDOW_MS = 2000;
     const shouldWatch = (filePath) => {
         for (const pattern of IGNORE_PATTERNS) {
             if (pattern.test(filePath))
@@ -45,8 +47,7 @@ export function createFileWatcher(config) {
     };
     const readFileAsText = async (filePath) => {
         try {
-            const content = await fs.promises.readFile(filePath, "utf-8");
-            return content;
+            return await fs.promises.readFile(filePath, "utf-8");
         }
         catch (err) {
             logger.error(`Failed to read ${filePath}: ${err}`);
@@ -76,6 +77,29 @@ export function createFileWatcher(config) {
         if (!shouldWatch(filePath))
             return;
         const relativePath = path.relative(workspaceDir, filePath);
+        const ignoreUntil = ignoreChanges.get(relativePath);
+        if (ignoreUntil && Date.now() < ignoreUntil) {
+            const binary = isBinaryFile(filePath);
+            let content;
+            if (binary) {
+                content = await readFileAsBase64(filePath);
+            }
+            else {
+                content = await readFileAsText(filePath);
+            }
+            if (content !== null) {
+                const hash = computeHash(content);
+                const size = await getFileSize(filePath);
+                watchedFiles.set(relativePath, { relativePath, isBinary: binary, hash, size });
+                fileContents.set(relativePath, content);
+                syncState.recordSyncedHash(relativePath, hash);
+                logger.debug(`Updated cache for received file: ${relativePath}`);
+            }
+            return;
+        }
+        if (ignoreUntil) {
+            ignoreChanges.delete(relativePath);
+        }
         const binary = isBinaryFile(filePath);
         let content;
         if (binary) {
@@ -94,18 +118,8 @@ export function createFileWatcher(config) {
         const tracked = { relativePath, isBinary: binary, hash, size };
         watchedFiles.set(relativePath, tracked);
         fileContents.set(relativePath, content);
-        if (!binary) {
-            const delta = await crdt.applyLocalChange(relativePath, content);
-            if (delta) {
-                logger.info(`File synced: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
-            }
-            else {
-                logger.info(`File tracked: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
-            }
-        }
-        else {
-            logger.info(`Binary file tracked: ${relativePath} (${size} bytes, ${watchedFiles.size} files watched)`);
-        }
+        syncState.recordLocalChange(relativePath, hash, binary);
+        logger.info(`File change detected: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
     };
     const handleFileDeletion = (filePath) => {
         if (!shouldWatch(filePath))
@@ -114,6 +128,7 @@ export function createFileWatcher(config) {
         if (watchedFiles.has(relativePath)) {
             watchedFiles.delete(relativePath);
             fileContents.delete(relativePath);
+            syncState.removeFile(relativePath);
             logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
             if (onFileDeleted) {
                 onFileDeleted(relativePath);
@@ -124,7 +139,7 @@ export function createFileWatcher(config) {
         async start() {
             logger.info(`Mesh file watcher starting: ${workspaceDir}`);
             await this.syncAllFiles();
-            const knownFiles = new Set(watchedFiles.keys());
+            syncState.markAllSynced();
             watcher = fs.watch(workspaceDir, { recursive: true }, async (event, filename) => {
                 if (!filename)
                     return;
@@ -137,7 +152,7 @@ export function createFileWatcher(config) {
                         }
                     }
                     catch {
-                        if (knownFiles.has(filename) || watchedFiles.has(path.relative(workspaceDir, filePath))) {
+                        if (watchedFiles.has(path.relative(workspaceDir, filePath))) {
                             handleFileDeletion(filePath);
                         }
                     }
@@ -206,6 +221,9 @@ export function createFileWatcher(config) {
                 const content = await readFileAsText(filePath);
                 return content !== null ? { content, isBinary: false } : null;
             }
+        },
+        ignoreNextChange(relativePath) {
+            ignoreChanges.set(relativePath, Date.now() + IGNORE_WINDOW_MS);
         },
         get onFileDeleted() {
             return onFileDeleted;

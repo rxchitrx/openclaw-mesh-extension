@@ -1,5 +1,5 @@
 export function createTransport(config) {
-    const { nodeName, port, crdt, logger } = config;
+    const { nodeName, port, syncState, logger } = config;
     const connections = new Map();
     const pendingConnections = new Map();
     const remoteManifests = new Map();
@@ -9,6 +9,7 @@ export function createTransport(config) {
     let fileContentProvider = null;
     let manifestProvider = null;
     let fileWriter = null;
+    let ignoreNextChangeFn = null;
     let server = null;
     let notificationHandler = null;
     let keepaliveTimer = null;
@@ -22,28 +23,6 @@ export function createTransport(config) {
         try {
             const message = JSON.parse(data);
             switch (message.type) {
-                case "delta":
-                    if (!approved)
-                        return;
-                    crdt.applyRemoteDelta(message.delta, message.file);
-                    break;
-                case "sync_request":
-                    if (!approved)
-                        return;
-                    {
-                        const state = crdt.getState(message.file);
-                        sendToPeer(peerName, {
-                            type: "sync_response",
-                            file: message.file,
-                            state,
-                        });
-                    }
-                    break;
-                case "sync_response":
-                    if (!approved)
-                        return;
-                    crdt.mergeState(message.state, message.file);
-                    break;
                 case "approval_request":
                     {
                         const pending = pendingConnections.get(peerName);
@@ -142,31 +121,48 @@ export function createTransport(config) {
                     if (!approved)
                         return;
                     {
-                        const { path: filePath, content, isBinary } = message;
-                        if (isBinary) {
-                            crdt.applyRemoteBinary(filePath, content);
-                        }
-                        else {
-                            crdt.applyRemoteDelta({ file: filePath, changes: [{ type: "replace", content }], timestamp: Date.now(), author: message.from || peerName, isBinary: false }, filePath);
+                        const { path: filePath, content, isBinary, hash: remoteHash } = message;
+                        if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
+                            logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+                            notify({
+                                type: "file_conflict",
+                                message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
+                                peerName,
+                                filePath,
+                                data: { file: filePath, remotePeer: peerName },
+                            });
+                            break;
                         }
                         if (fileWriter) {
                             try {
+                                if (ignoreNextChangeFn) {
+                                    ignoreNextChangeFn(filePath);
+                                }
                                 await fileWriter(filePath, content, isBinary);
-                                logger.info(`Wrote received file to disk: ${filePath} from ${peerName}`);
+                                syncState.recordRemoteChange(filePath, remoteHash || "", peerName, isBinary);
+                                logger.info(`Received and wrote file: ${filePath} from ${peerName}`);
+                                notify({
+                                    type: "file_received",
+                                    message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
+                                    peerName,
+                                    filePath,
+                                    data: { file: filePath },
+                                });
                             }
                             catch (err) {
                                 logger.error(`Failed to write received file ${filePath}: ${err}`);
+                                notify({
+                                    type: "file_received",
+                                    message: `Failed to write '${filePath}' from '${peerName}': ${err}`,
+                                    peerName,
+                                    filePath,
+                                    data: { file: filePath, error: String(err) },
+                                });
                             }
                         }
                         else {
                             logger.info(`Received file (no writer): ${filePath} from ${peerName}`);
                         }
-                        notify({
-                            type: "file_content",
-                            message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
-                            peerName,
-                            data: { file: filePath },
-                        });
                     }
                     break;
                 case "file_content_request":
@@ -176,11 +172,13 @@ export function createTransport(config) {
                         if (fileContentProvider) {
                             const fileData = await fileContentProvider(message.path);
                             if (fileData) {
+                                const localHash = syncState.getLocalHash(message.path);
                                 sendToPeer(peerName, {
                                     type: "file_content",
                                     path: message.path,
                                     content: fileData.content,
                                     isBinary: fileData.isBinary,
+                                    hash: localHash,
                                     from: nodeName,
                                 });
                                 logger.info(`Sent requested file ${message.path} to ${peerName}`);
@@ -198,8 +196,20 @@ export function createTransport(config) {
                         type: "file_deleted",
                         message: `Peer '${peerName}' deleted '${message.path}'. Keep your copy or say 'delete ${message.path} locally'.`,
                         peerName,
+                        filePath: message.path,
                         data: { path: message.path },
                     });
+                    break;
+                case "delta":
+                    if (!approved)
+                        return;
+                    logger.debug(`Received legacy 'delta' message — ignoring. Peer should use file_content instead.`);
+                    break;
+                case "sync_request":
+                case "sync_response":
+                    if (!approved)
+                        return;
+                    logger.debug(`Received legacy '${message.type}' message — ignoring.`);
                     break;
                 default:
                     logger.warn(`Unknown message type from ${peerName}: ${message.type}`);
@@ -502,11 +512,13 @@ export function createTransport(config) {
             sendToPeer(peerName, { type: "manifest_request", from: nodeName });
         },
         sendFileContent(peerName, relativePath, content, isBinary) {
+            const localHash = syncState.getLocalHash(relativePath);
             sendToPeer(peerName, {
                 type: "file_content",
                 path: relativePath,
                 content,
                 isBinary,
+                hash: localHash,
                 from: nodeName,
             });
         },
@@ -562,6 +574,9 @@ export function createTransport(config) {
         },
         setFileWriter(writer) {
             fileWriter = writer;
+        },
+        setIgnoreNextChange(fn) {
+            ignoreNextChangeFn = fn;
         },
     };
 }

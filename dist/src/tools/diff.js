@@ -2,7 +2,7 @@ export function createMeshDiffTool(services, _ctx) {
     return {
         label: "Mesh Diff",
         name: "mesh_diff",
-        description: "Compare local files against a remote peer's manifest. Shows which files are local-only, remote-only, or modified.",
+        description: "Compare local files against a remote peer's manifest. Shows which files are local-only, remote-only, modified, or conflicted.",
         parameters: {
             type: "object",
             properties: {
@@ -14,7 +14,7 @@ export function createMeshDiffTool(services, _ctx) {
             required: [],
         },
         execute: async (_toolCallId, toolParams, _signal, _onUpdate) => {
-            const { transport, getLocalManifest } = services;
+            const { transport, syncState, getLocalManifest } = services;
             const peerName = toolParams?.peerName;
             const connections = transport.getConnections();
             if (connections.length === 0) {
@@ -39,14 +39,7 @@ export function createMeshDiffTool(services, _ctx) {
                             const dirStr = info.trackingDir || "not tracking";
                             message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
                         }
-                        message += ` | remote manifest: ${manifest.length} files`;
-                        if (info) {
-                            const remoteFiles = new Set(info.trackingFiles);
-                            const manifestFiles = new Set(manifest.map((file) => file.relativePath));
-                            const localOnly = [...remoteFiles].filter((file) => !manifestFiles.has(file)).length;
-                            const remoteOnly = [...manifestFiles].filter((file) => !remoteFiles.has(file)).length;
-                            message += ` | delta: ${localOnly} local-only / ${remoteOnly} remote-only`;
-                        }
+                        message += ` | manifest: ${manifest.length} files`;
                         message += `\n`;
                     }
                     message += `\nSay 'diff with <peerName>' to compare files.`;
@@ -59,73 +52,76 @@ export function createMeshDiffTool(services, _ctx) {
             const remoteManifest = transport.getRemoteManifest(peerName);
             if (!remoteManifest) {
                 return {
-                    content: [{ type: "text", text: `No manifest from '${peerName}'. Request one with 'sync with ${peerName}'.` }],
+                    content: [{ type: "text", text: `No manifest from '${peerName}'. Exchange manifests first with 'sync with ${peerName}'.` }],
                     details: { ok: false, error: "no_manifest" },
                 };
             }
             const localManifest = getLocalManifest();
             const localMap = new Map(localManifest.map((f) => [f.relativePath, f]));
             const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
-            const info = transport.getNodeInfo(peerName);
             const localOnly = [];
             const remoteOnly = [];
             const modified = [];
+            const conflicted = [];
             const inSync = [];
-            for (const [path, file] of localMap) {
-                if (!remoteMap.has(path)) {
+            for (const [filePath, file] of localMap) {
+                if (!remoteMap.has(filePath)) {
                     localOnly.push(file);
                 }
                 else {
-                    const remote = remoteMap.get(path);
+                    const remote = remoteMap.get(filePath);
                     if (file.hash !== remote.hash) {
-                        modified.push(file);
+                        if (syncState.isLocallyModified(filePath)) {
+                            conflicted.push(file);
+                        }
+                        else {
+                            modified.push(file);
+                        }
                     }
                     else {
                         inSync.push(file);
                     }
                 }
             }
-            for (const [path, file] of remoteMap) {
-                if (!localMap.has(path)) {
+            for (const [filePath, file] of remoteMap) {
+                if (!localMap.has(filePath)) {
                     remoteOnly.push(file);
                 }
             }
+            const info = transport.getNodeInfo(peerName);
             let message = `DIFF: local vs ${peerName}\n\n`;
-            if (info) {
-                const dirStr = info.trackingDir || "not tracking";
-                message += `REMOTE NODE INFO:\n`;
-                message += `  Tracking dir: ${dirStr}\n`;
-                message += `  Tracking files: ${info.trackingFileCount}\n`;
-                if (info.trackingFiles.length > 0) {
-                    message += `  Files: ${info.trackingFiles.join(", ")}\n`;
-                }
-                message += `\n`;
-            }
             if (localOnly.length > 0) {
                 message += `LOCAL ONLY (you have, they don't):\n`;
                 for (const f of localOnly) {
-                    message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (${f.size} bytes)\n`;
+                    message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (${f.size}b)\n`;
                 }
                 message += `\n`;
             }
             if (remoteOnly.length > 0) {
                 message += `REMOTE ONLY (they have, you don't):\n`;
                 for (const f of remoteOnly) {
-                    message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (${f.size} bytes)\n`;
+                    message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (${f.size}b)\n`;
                 }
                 message += `\n`;
             }
             if (modified.length > 0) {
-                message += `MODIFIED (both have, different content):\n`;
+                message += `MODIFIED (remote has newer version, you haven't changed locally):\n`;
                 for (const f of modified) {
                     const remote = remoteMap.get(f.relativePath);
                     message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (local: ${f.size}b, remote: ${remote.size}b)\n`;
                 }
                 message += `\n`;
             }
+            if (conflicted.length > 0) {
+                message += `CONFLICT (both sides modified — pull will be blocked unless forced):\n`;
+                for (const f of conflicted) {
+                    const remote = remoteMap.get(f.relativePath);
+                    message += `  ${f.relativePath} ${f.isBinary ? "[binary]" : ""} (local: ${f.size}b, remote: ${remote.size}b)\n`;
+                }
+                message += `\n`;
+            }
             message += `IN SYNC: ${inSync.length} files\n\n`;
-            message += `SUMMARY: ${localOnly.length} local-only | ${remoteOnly.length} remote-only | ${modified.length} modified | ${inSync.length} in sync\n`;
-            message += `Use 'push <file>' or 'pull <file>' to sync specific files, or 'sync all with ${peerName}' to sync everything.`;
+            message += `SUMMARY: ${localOnly.length} local-only | ${remoteOnly.length} remote-only | ${modified.length} modified | ${conflicted.length} conflicted | ${inSync.length} in sync\n`;
             return {
                 content: [{ type: "text", text: message }],
                 details: {
@@ -134,6 +130,7 @@ export function createMeshDiffTool(services, _ctx) {
                     localOnly: localOnly.map((f) => f.relativePath),
                     remoteOnly: remoteOnly.map((f) => f.relativePath),
                     modified: modified.map((f) => f.relativePath),
+                    conflicted: conflicted.map((f) => f.relativePath),
                     inSyncCount: inSync.length,
                 },
             };

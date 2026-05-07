@@ -1,7 +1,9 @@
 import type { TransportService } from "../transport.js";
+import type { SyncStateService } from "../sync-state.js";
 import type { TrackedFile } from "../file-watcher.js";
 export type DiffServices = {
     transport: TransportService;
+    syncState: SyncStateService;
     getLocalManifest: () => TrackedFile[];
 };
 export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
@@ -33,6 +35,7 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             localOnly?: undefined;
             remoteOnly?: undefined;
             modified?: undefined;
+            conflicted?: undefined;
             inSyncCount?: undefined;
         };
     } | {
@@ -48,6 +51,7 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             localOnly?: undefined;
             remoteOnly?: undefined;
             modified?: undefined;
+            conflicted?: undefined;
             inSyncCount?: undefined;
         };
     } | {
@@ -61,6 +65,7 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             localOnly: string[];
             remoteOnly: string[];
             modified: string[];
+            conflicted: string[];
             inSyncCount: number;
             error?: undefined;
             peersWithManifests?: undefined;

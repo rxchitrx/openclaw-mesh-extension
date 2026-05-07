@@ -1,8 +1,8 @@
-import type { CRDTService } from "../crdt.js";
+import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
 import type { TrackedFile } from "../file-watcher.js";
 export type SyncServices = {
-    crdt: CRDTService;
+    syncState: SyncStateService;
     transport: TransportService;
     getFileContent: (relativePath: string) => Promise<{
         content: string;
@@ -29,6 +29,10 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
                 type: string;
                 description: string;
             };
+            force: {
+                type: string;
+                description: string;
+            };
         };
         required: string[];
     };
@@ -36,6 +40,7 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
         action?: string;
         peerName?: string;
         file?: string;
+        force?: boolean;
     }, _signal: any, _onUpdate: any) => Promise<{
         content: {
             type: "text";
@@ -48,9 +53,11 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
             peerName?: undefined;
             localFileCount?: undefined;
             file?: undefined;
+            forced?: undefined;
             filesSent?: undefined;
-            filesRequested?: undefined;
             files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
         };
     } | {
         content: {
@@ -64,9 +71,11 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
             localFileCount: number;
             error?: undefined;
             file?: undefined;
+            forced?: undefined;
             filesSent?: undefined;
-            filesRequested?: undefined;
             files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
         };
     } | {
         content: {
@@ -80,9 +89,47 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
             file: string;
             error?: undefined;
             localFileCount?: undefined;
+            forced?: undefined;
             filesSent?: undefined;
-            filesRequested?: undefined;
             files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            error: string;
+            file: string;
+            action?: undefined;
+            peerName?: undefined;
+            localFileCount?: undefined;
+            forced?: undefined;
+            filesSent?: undefined;
+            files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            peerName: string;
+            file: string;
+            forced: boolean;
+            error?: undefined;
+            localFileCount?: undefined;
+            filesSent?: undefined;
+            files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
         };
     } | {
         content: {
@@ -97,8 +144,10 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
             peerName?: undefined;
             localFileCount?: undefined;
             file?: undefined;
-            filesRequested?: undefined;
+            forced?: undefined;
             files?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
         };
     } | {
         content: {
@@ -110,42 +159,48 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
             action: string;
             peerName: string;
             filesSent: number;
-            error?: undefined;
-            localFileCount?: undefined;
-            file?: undefined;
-            filesRequested?: undefined;
-            files?: undefined;
-        };
-    } | {
-        content: {
-            type: "text";
-            text: string;
-        }[];
-        details: {
-            ok: boolean;
-            action: string;
-            filesRequested: number;
-            error?: undefined;
-            peerName?: undefined;
-            localFileCount?: undefined;
-            file?: undefined;
-            filesSent?: undefined;
-            files?: undefined;
-        };
-    } | {
-        content: {
-            type: "text";
-            text: string;
-        }[];
-        details: {
-            ok: boolean;
-            action: string;
-            peerName: string;
-            filesRequested: number;
             files: string[];
             error?: undefined;
             localFileCount?: undefined;
             file?: undefined;
+            forced?: undefined;
+            filesRequested?: undefined;
+            conflicts?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            filesRequested: number;
+            error?: undefined;
+            peerName?: undefined;
+            localFileCount?: undefined;
+            file?: undefined;
+            forced?: undefined;
+            filesSent?: undefined;
+            files?: undefined;
+            conflicts?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            peerName: string;
+            filesRequested: number;
+            conflicts: string[];
+            files: string[];
+            error?: undefined;
+            localFileCount?: undefined;
+            file?: undefined;
+            forced?: undefined;
             filesSent?: undefined;
         };
     }>;

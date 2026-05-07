@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-import { createCRDT, type CRDTService } from "./src/crdt.js";
+import { createSyncState, type SyncStateService } from "./src/sync-state.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
 import { createMeshEventStore, summarizeMeshEvents, type MeshEventKind, type MeshEventStore } from "./src/events.js";
 import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
@@ -40,26 +40,18 @@ function mapTransportEventKind(type: TransportNotification["type"]): MeshEventKi
       return "peer_approved";
     case "peer_denied":
       return "peer_denied";
-    case "peer_connected":
-      return "peer_connected";
     case "peer_disconnected":
       return "peer_disconnected";
     case "manifest_received":
       return "manifest_received";
-    case "sync_requested":
-      return "sync_requested";
-    case "sync_applied":
-      return "sync_applied";
-    case "sync_failed":
-      return "sync_failed";
-    case "file_sent":
-      return "file_sent";
     case "file_received":
       return "file_received";
-    case "file_written":
-      return "file_written";
-    case "conflict":
+    case "file_conflict":
       return "conflict";
+    case "file_deleted":
+      return "discovery_warning";
+    case "node_info_received":
+      return "peer_connected";
     default:
       return "discovery_warning";
   }
@@ -97,8 +89,8 @@ const meshPlugin = {
     logger.info(`Initializing mesh node: ${nodeName} on port ${port}`);
 
     const discovery = createDiscovery({ nodeName, port, logger });
-    const crdt = createCRDT({ nodeName, logger });
-    const transport = createTransport({ nodeName, port, crdt, logger });
+    const syncState = createSyncState({ nodeName, logger });
+    const transport = createTransport({ nodeName, port, syncState, logger });
     const eventStore = createMeshEventStore();
 
     let fileWatcher: FileWatcherService | null = null;
@@ -177,7 +169,7 @@ const meshPlugin = {
         await fileWatcher.stop();
         fileWatcher = null;
       }
-      fileWatcher = createFileWatcher({ workspaceDir: dir, crdt, logger });
+      fileWatcher = createFileWatcher({ workspaceDir: dir, syncState, logger });
       fileWatcher.onFileDeleted = (relativePath: string) => {
         transport.notifyFileDeleted(relativePath);
         enqueueEvent("file_written", `Local tracked file '${relativePath}' was deleted and peers were notified.`, {
@@ -256,6 +248,12 @@ const meshPlugin = {
       logger.info(`Wrote received file to disk: ${filePath}`);
     });
 
+    transport.setIgnoreNextChange((relativePath: string) => {
+      if (fileWatcher) {
+        fileWatcher.ignoreNextChange(relativePath);
+      }
+    });
+
     if (api.registerAgentEventSubscription) {
       api.registerAgentEventSubscription({
         id: "mesh-active-session",
@@ -273,15 +271,15 @@ const meshPlugin = {
 
     api.registerTool((ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
     api.registerTool(
-      (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState, eventStore }, ctx),
+      (ctx: any) => createMeshStatusTool({ discovery, transport, syncState, getTrackState }, ctx),
       { name: "mesh_status" },
     );
     api.registerTool(
-      (ctx: any) => createMeshBroadcastTool({ crdt, transport, getFileContent }, ctx),
+      (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest, nodeName }, ctx),
       { name: "mesh_broadcast" },
     );
     api.registerTool(
-      (ctx: any) => createMeshSyncTool({ crdt, transport, getFileContent, getLocalManifest }, ctx),
+      (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx),
       { name: "mesh_sync" },
     );
     api.registerTool((ctx: any) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
@@ -290,7 +288,7 @@ const meshPlugin = {
     api.registerTool((ctx: any) => createMeshConnectionsTool({ transport, eventStore }, ctx), {
       name: "mesh_connections",
     });
-    api.registerTool((ctx: any) => createMeshDiffTool({ transport, getLocalManifest }, ctx), { name: "mesh_diff" });
+    api.registerTool((ctx: any) => createMeshDiffTool({ transport, syncState, getLocalManifest }, ctx), { name: "mesh_diff" });
     api.registerTool((ctx: any) => createMeshEventsTool(eventStore, ctx), { name: "mesh_events" });
     api.registerTool((ctx: any) => createMeshAckTool(eventStore, ctx), { name: "mesh_ack" });
 
@@ -338,16 +336,15 @@ const meshPlugin = {
       const peers = discovery.getPeers();
       const connections = transport.getConnections();
       const pending = transport.getPendingConnections();
-      const pendingDeltas = crdt.getPendingDeltas();
+      const pendingChanges = syncState.getPendingChanges();
 
       logger.debug(
-        `Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas, ${pending.length} pending approvals`,
+        `Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingChanges.length} pending changes, ${pending.length} pending approvals`,
       );
 
       try {
         await discovery.scan();
         await transport.maintainConnections();
-        await crdt.syncPendingDeltas();
 
         for (const peer of discovery.getPeers()) {
           if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
@@ -364,18 +361,18 @@ const meshPlugin = {
       const unreadEvents = eventStore.listUnread();
       if (pending.length > 0) {
         const names = pending.map((item) => item.peerName).join(", ");
-        parts.push(`${pending.length} peer(s) awaiting approval: ${names}. Say 'approve <name>' or 'deny <name>'.`);
+        parts.push(`${pending.length} peer(s) awaiting approval: ${names}. Ask the user if they want to approve or deny.`);
       }
       if (unreadEvents.length > 0 && !currentSessionKey) {
         parts.push(`${unreadEvents.length} unread mesh event(s) are queued, but there is no active session target yet.`);
       }
-      if (pendingDeltas.length > 0) {
-        parts.push(`${pendingDeltas.length} pending file change(s) not yet broadcast. Say 'broadcast' to push to peers.`);
+      if (pendingChanges.length > 0) {
+        parts.push(`${pendingChanges.length} pending file change(s) not yet broadcast. Ask the user if they want to broadcast.`);
       }
 
       if (parts.length > 0) {
         return {
-          appendContext: `[mesh heartbeat] ${parts.join(" ")}`,
+          appendContext: `[mesh heartbeat] IMPORTANT — You MUST immediately tell the user about the following. Do NOT keep this to yourself: ${parts.join(" ")}`,
         };
       }
       return {};

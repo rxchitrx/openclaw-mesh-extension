@@ -1,7 +1,7 @@
 import type { DiscoveryService } from "../discovery.js";
 import type { TransportService } from "../transport.js";
-import type { CRDTService } from "../crdt.js";
-import type { FileWatcherService, TrackedFile } from "../file-watcher.js";
+import type { SyncStateService } from "../sync-state.js";
+import type { FileWatcherService } from "../file-watcher.js";
 
 type TrackState = {
   fileWatcher: FileWatcherService | null;
@@ -13,7 +13,7 @@ type TrackState = {
 type MeshServices = {
   discovery: DiscoveryService;
   transport: TransportService;
-  crdt: CRDTService;
+  syncState: SyncStateService;
   getTrackState: () => TrackState;
 };
 
@@ -28,16 +28,15 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       required: [] as string[],
     },
     execute: async (_toolCallId: string, _toolParams: any, _signal: any, _onUpdate: any) => {
-      const { discovery, transport, crdt, getTrackState } = services;
+      const { discovery, transport, syncState, getTrackState } = services;
       const { fileWatcher, currentTrackDir } = getTrackState();
 
       const localNode = discovery.getLocalNode();
       const peers = discovery.getPeers();
       const connections = transport.getConnections();
       const pending = transport.getPendingConnections();
-      const files = crdt.getFiles();
-      const pendingDeltas = crdt.getPendingDeltas();
       const watchedFiles = fileWatcher?.getWatchedFiles() ?? [];
+      const pendingChanges = syncState.getPendingChanges();
       const now = new Date().toISOString();
 
       let message = `MESH STATUS\n`;
@@ -72,18 +71,8 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
           if (info) {
             const dirStr = info.trackingDir || "not tracking";
             message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
-            if (info.trackingFiles.length > 0) {
-              message += ` | files: ${info.trackingFiles.join(", ")}`;
-            }
           }
-          message += manifest ? ` | remote manifest: ${manifest.length} files` : " | remote manifest: none";
-          if (manifest && info) {
-            const manifestFiles = new Set(manifest.map((file) => file.relativePath));
-            const remoteFiles = new Set(info.trackingFiles);
-            const localOnly = [...remoteFiles].filter((file) => !manifestFiles.has(file)).length;
-            const remoteOnly = [...manifestFiles].filter((file) => !remoteFiles.has(file)).length;
-            message += ` | delta: ${localOnly} local-only / ${remoteOnly} remote-only`;
-          }
+          message += manifest ? ` | manifest: ${manifest.length} files` : " | manifest: none";
           message += `\n`;
         }
       }
@@ -98,16 +87,10 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
 
       message += `FILE SYNC\n`;
       message += `  Watched: ${watchedFiles.length}\n`;
-      message += `  In CRDT: ${files.length}\n`;
-      message += `  Pending deltas: ${pendingDeltas.length}\n`;
-
-      const binaryCount = files.filter((f: string) => crdt.isFileBinary(f)).length;
-      if (binaryCount > 0) {
-        message += `  Binary files: ${binaryCount}\n`;
-      }
+      message += `  Pending changes: ${pendingChanges.length}\n`;
 
       const health = connections.length > 0 ? "HEALTHY" : (peers.length > 0 ? "PARTIAL" : "STANDALONE");
-      message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingDeltas.length === 0 ? "IN SYNC" : `${pendingDeltas.length} PENDING`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
+      message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
 
       return {
         content: [{ type: "text" as const, text: message }],
@@ -119,10 +102,8 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
             peerCount: peers.length,
             connectionCount: connections.length,
             pendingApprovalCount: pending.length,
-            syncedFiles: files.length,
             watchedFiles: watchedFiles.length,
-            pendingDeltas: pendingDeltas.length,
-            binaryFiles: binaryCount,
+            pendingChanges: pendingChanges.length,
             health,
             timestamp: now,
           },
