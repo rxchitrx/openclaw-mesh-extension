@@ -1,18 +1,22 @@
+import * as fs from "fs";
+import * as path from "path";
+
 import { createCRDT, type CRDTService } from "./src/crdt.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
+import { createMeshEventStore, summarizeMeshEvents, type MeshEventKind, type MeshEventStore } from "./src/events.js";
 import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
-import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
+import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
+import { createMeshDiffTool } from "./src/tools/diff.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
+import { createMeshEventsTool } from "./src/tools/events.js";
+import { createMeshAckTool } from "./src/tools/ack.js";
+import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
+import { createMeshRejectTool } from "./src/tools/reject.js";
 import { createMeshStatusTool } from "./src/tools/status.js";
 import { createMeshSyncTool } from "./src/tools/sync.js";
 import { createMeshTrackTool } from "./src/tools/track.js";
-import { createMeshApproveTool } from "./src/tools/approve.js";
-import { createMeshDiffTool } from "./src/tools/diff.js";
-import { createMeshRejectTool } from "./src/tools/reject.js";
-import { createTransport, type TransportService, type TransportNotification } from "./src/transport.js";
-import * as fs from "fs";
-import * as path from "path";
+import { createTransport, type TransportNotification, type TransportService } from "./src/transport.js";
 
 export type MeshConfig = {
   enabled?: boolean;
@@ -20,6 +24,46 @@ export type MeshConfig = {
   port?: number;
   trackDir?: string;
 };
+
+type TrackState = {
+  fileWatcher: FileWatcherService | null;
+  currentTrackDir: string | null;
+  startFileWatcher: (dir: string) => Promise<void>;
+  stopFileWatcher: () => Promise<void>;
+};
+
+function mapTransportEventKind(type: TransportNotification["type"]): MeshEventKind {
+  switch (type) {
+    case "peer_pending":
+      return "peer_pending_approval";
+    case "peer_approved":
+      return "peer_approved";
+    case "peer_denied":
+      return "peer_denied";
+    case "peer_connected":
+      return "peer_connected";
+    case "peer_disconnected":
+      return "peer_disconnected";
+    case "manifest_received":
+      return "manifest_received";
+    case "sync_requested":
+      return "sync_requested";
+    case "sync_applied":
+      return "sync_applied";
+    case "sync_failed":
+      return "sync_failed";
+    case "file_sent":
+      return "file_sent";
+    case "file_received":
+      return "file_received";
+    case "file_written":
+      return "file_written";
+    case "conflict":
+      return "conflict";
+    default:
+      return "discovery_warning";
+  }
+}
 
 const meshPlugin = {
   id: "mesh",
@@ -47,14 +91,86 @@ const meshPlugin = {
     const nodeName = config.nodeName || `node-${process.pid}`;
     const port = config.port || 18790;
     let currentTrackDir: string | null = config.trackDir || null;
+    let currentSessionKey: string | null = null;
+    const registeredSessionJobs = new Set<string>();
 
     logger.info(`Initializing mesh node: ${nodeName} on port ${port}`);
 
     const discovery = createDiscovery({ nodeName, port, logger });
     const crdt = createCRDT({ nodeName, logger });
     const transport = createTransport({ nodeName, port, crdt, logger });
+    const eventStore = createMeshEventStore();
 
     let fileWatcher: FileWatcherService | null = null;
+
+    const getTrackState = (): TrackState => ({
+      fileWatcher,
+      currentTrackDir,
+      startFileWatcher,
+      stopFileWatcher,
+    });
+
+    const tryInjectDigest = async (force = false): Promise<string | null> => {
+      const targetSessionKey = currentSessionKey;
+      if (!targetSessionKey || !api.enqueueNextTurnInjection) {
+        return null;
+      }
+      const deliverable = force ? eventStore.getUnacknowledged() : eventStore.getDeliverable(Date.now());
+      if (deliverable.length === 0) {
+        return null;
+      }
+      const text = summarizeMeshEvents(deliverable);
+      if (!text) {
+        return null;
+      }
+
+      try {
+        await api.enqueueNextTurnInjection({
+          sessionKey: targetSessionKey,
+          text,
+          placement: "append_context",
+          ttlMs: 300000,
+        });
+        eventStore.markDelivered(
+          deliverable.map((event) => event.id),
+          Date.now(),
+        );
+        return text;
+      } catch (err) {
+        logger.warn(`Could not inject mesh digest into ${targetSessionKey}: ${err}`);
+        return null;
+      }
+    };
+
+    const registerSessionJob = (sessionKey: string) => {
+      if (!api.registerSessionSchedulerJob || registeredSessionJobs.has(sessionKey)) {
+        return;
+      }
+      api.registerSessionSchedulerJob({
+        id: `mesh-notifier:${sessionKey}`,
+        sessionKey,
+        kind: "nudge",
+        description: "Track mesh notification ownership for this active session",
+      });
+      registeredSessionJobs.add(sessionKey);
+    };
+
+    const enqueueEvent = (kind: MeshEventKind, message: string, options?: {
+      peerName?: string;
+      filePath?: string;
+      details?: Record<string, unknown>;
+      expiresAt?: number;
+    }) => {
+      eventStore.addEvent({
+        kind,
+        message,
+        peerName: options?.peerName,
+        filePath: options?.filePath,
+        details: options?.details,
+        expiresAt: options?.expiresAt,
+      });
+      void tryInjectDigest(false);
+    };
 
     const startFileWatcher = async (dir: string) => {
       if (fileWatcher) {
@@ -62,31 +178,27 @@ const meshPlugin = {
         fileWatcher = null;
       }
       fileWatcher = createFileWatcher({ workspaceDir: dir, crdt, logger });
-
       fileWatcher.onFileDeleted = (relativePath: string) => {
         transport.notifyFileDeleted(relativePath);
-        tryInjectNotification(`File deleted in tracked directory: '${relativePath}'. Connected peers will be notified.`);
+        enqueueEvent("file_written", `Local tracked file '${relativePath}' was deleted and peers were notified.`, {
+          filePath: relativePath,
+          details: { direction: "local-delete" },
+        });
       };
-
       await fileWatcher.start();
       currentTrackDir = dir;
     };
 
     const stopFileWatcher = async () => {
-      if (fileWatcher) {
-        fileWatcher.onFileDeleted = null;
-        await fileWatcher.stop();
-        fileWatcher = null;
+      if (!fileWatcher) {
+        currentTrackDir = null;
+        return;
       }
+      fileWatcher.onFileDeleted = null;
+      await fileWatcher.stop();
+      fileWatcher = null;
       currentTrackDir = null;
     };
-
-    const getTrackState = () => ({
-      fileWatcher,
-      currentTrackDir,
-      startFileWatcher,
-      stopFileWatcher,
-    });
 
     const getFileContent = async (relativePath: string): Promise<{ content: string; isBinary: boolean } | null> => {
       if (!fileWatcher) return null;
@@ -98,23 +210,22 @@ const meshPlugin = {
       return fileWatcher.getManifest();
     };
 
-    const tryInjectNotification = (text: string) => {
-      try {
-        if (api.enqueueNextTurnInjection) {
-          api.enqueueNextTurnInjection({
-            sessionKey: "default",
-            text: `[mesh] ${text}`,
-            placement: "append_context",
-            ttlMs: 300000,
-          });
-        }
-      } catch (err) {
-        logger.debug(`Could not inject notification: ${err}`);
-      }
-    };
-
     transport.setNotificationHandler((notification: TransportNotification) => {
-      tryInjectNotification(notification.message);
+      const host = typeof notification.data?.host === "string" ? notification.data.host : undefined;
+      if (notification.peerName && host) {
+        discovery.notePeer({
+          name: notification.peerName,
+          host,
+          port,
+          source: "transport",
+        });
+      }
+      enqueueEvent(mapTransportEventKind(notification.type), notification.message, {
+        peerName: notification.peerName,
+        filePath: notification.filePath,
+        details: notification.data,
+        expiresAt: notification.type === "peer_pending" ? Date.now() + 60000 : undefined,
+      });
     });
 
     transport.setNodeInfoProvider(() => {
@@ -123,42 +234,46 @@ const meshPlugin = {
         nodeName,
         trackingDir: currentTrackDir,
         trackingFileCount: manifest.length,
-        trackingFiles: manifest.map((f) => f.relativePath),
+        trackingFiles: manifest.map((file) => file.relativePath),
       };
     });
 
-    transport.setFileContentProvider(async (relativePath: string) => {
-      return getFileContent(relativePath);
-    });
-
-    transport.setManifestProvider(() => {
-      return getLocalManifest();
-    });
-
+    transport.setFileContentProvider(async (relativePath: string) => getFileContent(relativePath));
+    transport.setManifestProvider(() => getLocalManifest());
     transport.setFileWriter(async (relativePath: string, content: string, isBinary: boolean) => {
       if (!currentTrackDir) {
         logger.warn(`Cannot write file ${relativePath}: no track directory set`);
-        return;
+        throw new Error("no_track_directory");
       }
       const filePath = path.join(currentTrackDir, relativePath);
       const dir = path.dirname(filePath);
-      try {
-        await fs.promises.mkdir(dir, { recursive: true });
-        if (isBinary) {
-          await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
-        } else {
-          await fs.promises.writeFile(filePath, content, "utf-8");
-        }
-        logger.info(`Wrote received file to disk: ${filePath}`);
-      } catch (err) {
-        logger.error(`Failed to write file ${filePath}: ${err}`);
-        throw err;
+      await fs.promises.mkdir(dir, { recursive: true });
+      if (isBinary) {
+        await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+      } else {
+        await fs.promises.writeFile(filePath, content, "utf-8");
       }
+      logger.info(`Wrote received file to disk: ${filePath}`);
     });
+
+    if (api.registerAgentEventSubscription) {
+      api.registerAgentEventSubscription({
+        id: "mesh-active-session",
+        streams: ["lifecycle", "tool", "error"],
+        handle(event: any) {
+          if (!event?.sessionKey) {
+            return;
+          }
+          currentSessionKey = event.sessionKey;
+          registerSessionJob(event.sessionKey);
+          void tryInjectDigest(true);
+        },
+      });
+    }
 
     api.registerTool((ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
     api.registerTool(
-      (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState }, ctx),
+      (ctx: any) => createMeshStatusTool({ discovery, transport, crdt, getTrackState, eventStore }, ctx),
       { name: "mesh_status" },
     );
     api.registerTool(
@@ -172,18 +287,16 @@ const meshPlugin = {
     api.registerTool((ctx: any) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
     api.registerTool((ctx: any) => createMeshApproveTool(transport, ctx), { name: "mesh_approve" });
     api.registerTool((ctx: any) => createMeshRejectTool(transport, ctx), { name: "mesh_reject" });
-    api.registerTool((ctx: any) => createMeshConnectionsTool(transport, ctx), {
+    api.registerTool((ctx: any) => createMeshConnectionsTool({ transport, eventStore }, ctx), {
       name: "mesh_connections",
     });
-    api.registerTool(
-      (ctx: any) => createMeshDiffTool({ transport, getLocalManifest }, ctx),
-      { name: "mesh_diff" },
-    );
+    api.registerTool((ctx: any) => createMeshDiffTool({ transport, getLocalManifest }, ctx), { name: "mesh_diff" });
+    api.registerTool((ctx: any) => createMeshEventsTool(eventStore, ctx), { name: "mesh_events" });
+    api.registerTool((ctx: any) => createMeshAckTool(eventStore, ctx), { name: "mesh_ack" });
 
     api.on("gateway_start", async () => {
       try {
         logger.info(`Starting mesh services... Node: ${nodeName}, Port: ${port}`);
-
         await discovery.start();
         await transport.start();
 
@@ -194,16 +307,13 @@ const meshPlugin = {
           logger.info("No track directory configured. Tell me to track a project directory to get started.");
         }
 
-        logger.info(`Mesh services started successfully`);
-
         setTimeout(async () => {
           await discovery.scan();
           const discoveredPeers = discovery.getPeers();
           for (const peer of discoveredPeers) {
             const connections = transport.getConnections();
             const pending = transport.getPendingConnections();
-            if (!connections.includes(peer.name) && !pending.some((p) => p.peerName === peer.name)) {
-              logger.info(`Auto-connecting to discovered peer: ${peer.name} at ${peer.host}:${peer.port}`);
+            if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
               await transport.connectToPeer(peer);
             }
           }
@@ -230,16 +340,17 @@ const meshPlugin = {
       const pending = transport.getPendingConnections();
       const pendingDeltas = crdt.getPendingDeltas();
 
-      logger.debug(`Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas, ${pending.length} pending approvals`);
+      logger.debug(
+        `Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingDeltas.length} pending deltas, ${pending.length} pending approvals`,
+      );
 
       try {
         await discovery.scan();
         await transport.maintainConnections();
         await crdt.syncPendingDeltas();
 
-        const discoveredPeers = discovery.getPeers();
-        for (const peer of discoveredPeers) {
-          if (!connections.includes(peer.name) && !pending.some((p) => p.peerName === peer.name)) {
+        for (const peer of discovery.getPeers()) {
+          if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
             await transport.connectToPeer(peer);
           }
         }
@@ -247,13 +358,17 @@ const meshPlugin = {
         logger.warn(`Heartbeat error: ${err}`);
       }
 
-      const parts: string[] = [];
+      await tryInjectDigest(false);
 
+      const parts: string[] = [];
+      const unreadEvents = eventStore.listUnread();
       if (pending.length > 0) {
-        const names = pending.map((p) => p.peerName).join(", ");
+        const names = pending.map((item) => item.peerName).join(", ");
         parts.push(`${pending.length} peer(s) awaiting approval: ${names}. Say 'approve <name>' or 'deny <name>'.`);
       }
-
+      if (unreadEvents.length > 0 && !currentSessionKey) {
+        parts.push(`${unreadEvents.length} unread mesh event(s) are queued, but there is no active session target yet.`);
+      }
       if (pendingDeltas.length > 0) {
         parts.push(`${pendingDeltas.length} pending file change(s) not yet broadcast. Say 'broadcast' to push to peers.`);
       }
@@ -263,7 +378,6 @@ const meshPlugin = {
           appendContext: `[mesh heartbeat] ${parts.join(" ")}`,
         };
       }
-
       return {};
     });
 

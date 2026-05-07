@@ -42,6 +42,7 @@ export function createMeshDiscoverTool(services: DiscoverServices, _ctx: any) {
           host: peerHost,
           port: peerPort,
           lastSeen: Date.now(),
+          source: "transport",
         };
 
         const success = await transport.connectToPeer(peer);
@@ -93,7 +94,7 @@ export function createMeshDiscoverTool(services: DiscoverServices, _ctx: any) {
           message += `DISCOVERED: ${peers.length}\n`;
           for (const peer of peers) {
             const ago = Math.floor((Date.now() - peer.lastSeen) / 1000);
-            message += `  ${peer.name} at ${peer.host}:${peer.port} (${ago}s ago)\n`;
+            message += `  ${peer.name} at ${peer.host}:${peer.port} (${ago}s ago, source=${peer.source})\n`;
           }
           message += `\n`;
         }

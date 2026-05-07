@@ -1,4 +1,4 @@
-import type { TransportService, Connection } from "../transport.js";
+import type { TransportService } from "../transport.js";
 import type { TrackedFile } from "../file-watcher.js";
 
 export type DiffServices = {
@@ -63,6 +63,9 @@ export function createMeshDiffTool(services: DiffServices, _ctx: any) {
       const localManifest = getLocalManifest();
       const localMap = new Map(localManifest.map((f) => [f.relativePath, f]));
       const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
+      const remoteAppliedMap = new Map(
+        transport.getRemoteAppliedFiles(peerName).map((item) => [item.path, item.hash]),
+      );
 
       const localOnly: TrackedFile[] = [];
       const remoteOnly: TrackedFile[] = [];
@@ -71,11 +74,19 @@ export function createMeshDiffTool(services: DiffServices, _ctx: any) {
 
       for (const [path, file] of localMap) {
         if (!remoteMap.has(path)) {
-          localOnly.push(file);
+          if (remoteAppliedMap.get(path) === file.hash) {
+            inSync.push(file);
+          } else {
+            localOnly.push(file);
+          }
         } else {
           const remote = remoteMap.get(path)!;
           if (file.hash !== remote.hash) {
-            modified.push(file);
+            if (remoteAppliedMap.get(path) === file.hash) {
+              inSync.push(file);
+            } else {
+              modified.push(file);
+            }
           } else {
             inSync.push(file);
           }

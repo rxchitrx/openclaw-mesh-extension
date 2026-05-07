@@ -1,11 +1,16 @@
 import * as os from "os";
 import * as net from "net";
+import { execFile } from "child_process";
 
 export type PeerInfo = {
   name: string;
   host: string;
   port: number;
   lastSeen: number;
+  source: "mdns" | "transport" | "subnet-scan";
+  lastTransportSeen?: number;
+  lastMdnsSeen?: number;
+  lastScanSeen?: number;
 };
 
 export type DiscoveryConfig = {
@@ -20,6 +25,7 @@ export type DiscoveryService = {
   scan: () => Promise<void>;
   getPeers: () => PeerInfo[];
   getLocalNode: () => { name: string; host: string; port: number };
+  notePeer: (peer: { name: string; host: string; port?: number; source?: "mdns" | "transport" | "subnet-scan" }) => void;
 };
 
 const MESH_SERVICE_TYPE = "oc-mesh";
@@ -66,17 +72,26 @@ function probePort(ip: string, port: number): Promise<boolean> {
   });
 }
 
-async function scanSubnet(subnet: string, port: number, localIP: string): Promise<string[]> {
-  const promises: Promise<string>[] = [];
+function probePing(ip: string): Promise<boolean> {
+  const args = process.platform === "darwin" ? ["-c", "1", "-t", "1", ip] : ["-c", "1", "-W", "1", ip];
+  return new Promise((resolve) => {
+    execFile("ping", args, { timeout: 2500 }, (error) => {
+      resolve(!error);
+    });
+  });
+}
+
+async function scanSubnet(subnet: string, port: number, localIP: string): Promise<Array<{ ip: string; portOpen: boolean; pingOk: boolean }>> {
+  const promises: Promise<{ ip: string; portOpen: boolean; pingOk: boolean }>[] = [];
   for (let i = 1; i <= 254; i++) {
     const ip = `${subnet}.${i}`;
     if (ip === localIP) continue;
     promises.push(
-      probePort(ip, port).then((open) => (open ? ip : ""))
+      Promise.all([probePort(ip, port), probePing(ip)]).then(([portOpen, pingOk]) => ({ ip, portOpen, pingOk })),
     );
   }
   const results = await Promise.all(promises);
-  return results.filter(Boolean);
+  return results.filter((item) => item.portOpen || item.pingOk);
 }
 
 export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
@@ -117,9 +132,18 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
           const existing = peers.get(svc.name);
           if (existing && existing.host === host && existing.port === peerPort) {
             existing.lastSeen = Date.now();
+            existing.source = "mdns";
+            existing.lastMdnsSeen = Date.now();
             return;
           }
-          peers.set(svc.name, { name: svc.name, host, port: peerPort, lastSeen: Date.now() });
+          peers.set(svc.name, {
+            name: svc.name,
+            host,
+            port: peerPort,
+            lastSeen: Date.now(),
+            source: "mdns",
+            lastMdnsSeen: Date.now(),
+          });
           logger.info(`Peer discovered (mDNS): ${svc.name} at ${host}:${peerPort}`);
         });
         browser.on("down", (svc: any) => {
@@ -156,14 +180,26 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         logger.info(`Scanning subnet ${subnet}.0/24 for mesh nodes on port ${SCAN_PORT}...`);
         try {
           const found = await scanSubnet(subnet, SCAN_PORT, localIP);
-          for (const ip of found) {
+          for (const entry of found) {
+            const { ip, portOpen, pingOk } = entry;
             const existingPeer = Array.from(peers.values()).find((p) => p.host === ip);
             if (existingPeer) {
               existingPeer.lastSeen = Date.now();
+              existingPeer.source = "subnet-scan";
+              existingPeer.lastScanSeen = Date.now();
             } else {
               const peerName = `node-${ip.split(".")[3]}`;
-              peers.set(peerName, { name: peerName, host: ip, port: SCAN_PORT, lastSeen: Date.now() });
-              logger.info(`Peer discovered (subnet scan): ${peerName} at ${ip}:${SCAN_PORT}`);
+              peers.set(peerName, {
+                name: peerName,
+                host: ip,
+                port: portOpen ? SCAN_PORT : port,
+                lastSeen: Date.now(),
+                source: "subnet-scan",
+                lastScanSeen: Date.now(),
+              });
+              logger.info(
+                `Peer discovered (subnet scan): ${peerName} at ${ip}:${portOpen ? SCAN_PORT : port} (${pingOk ? "ping" : "tcp"})`,
+              );
             }
           }
           logger.info(`Subnet scan complete: ${found.length} mesh node(s) found`);
@@ -192,6 +228,37 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
 
     getLocalNode() {
       return { name: nodeName, host: getLocalIP(), port };
+    },
+
+    notePeer(peer) {
+      if (!peer.name || peer.name === nodeName || !peer.host) {
+        return;
+      }
+      const existing = peers.get(peer.name);
+      const peerPort = peer.port || port;
+      const now = Date.now();
+      const source = peer.source || "transport";
+      if (existing) {
+        existing.host = peer.host;
+        existing.port = peerPort;
+        existing.lastSeen = now;
+        existing.source = source;
+        if (source === "transport") existing.lastTransportSeen = now;
+        if (source === "mdns") existing.lastMdnsSeen = now;
+        if (source === "subnet-scan") existing.lastScanSeen = now;
+        return;
+      }
+      peers.set(peer.name, {
+        name: peer.name,
+        host: peer.host,
+        port: peerPort,
+        lastSeen: now,
+        source,
+        lastTransportSeen: source === "transport" ? now : undefined,
+        lastMdnsSeen: source === "mdns" ? now : undefined,
+        lastScanSeen: source === "subnet-scan" ? now : undefined,
+      });
+      logger.info(`Peer noted from transport activity: ${peer.name} at ${peer.host}:${peerPort}`);
     },
   };
 }
