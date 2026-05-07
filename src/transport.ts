@@ -1,6 +1,4 @@
-import { createHash } from "crypto";
-
-import type { CRDTService } from "./crdt.js";
+import type { CRDTService, Delta } from "./crdt.js";
 import type { PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 
@@ -33,35 +31,12 @@ export type NodeInfo = {
   trackingFiles: string[];
 };
 
-export type RemoteAppliedFile = {
-  path: string;
-  hash: string;
-  appliedAt: number;
+export type TransportNotification = {
+  type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "conflict" | "manifest_received" | "node_info_received";
+  message: string;
+  peerName?: string;
+  data?: any;
 };
-
-export type TransportNotification =
-  | {
-      type:
-        | "peer_pending"
-        | "peer_approved"
-        | "peer_denied"
-        | "peer_connected"
-        | "peer_disconnected"
-        | "conflict"
-        | "manifest_received"
-        | "node_info_received"
-        | "sync_requested"
-        | "sync_failed"
-        | "sync_applied"
-        | "file_sent"
-        | "file_received"
-        | "file_written"
-        | "file_deleted";
-      message: string;
-      peerName?: string;
-      filePath?: string;
-      data?: Record<string, unknown>;
-    };
 
 export type TransportService = {
   start: () => Promise<void>;
@@ -86,13 +61,7 @@ export type TransportService = {
   setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
   setManifestProvider: (provider: () => TrackedFile[]) => void;
   setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
-  getRemoteAppliedFiles: (peerName: string) => RemoteAppliedFile[];
-  getRecentDisconnects: () => Array<{ peerName: string; reason: string; at: number }>;
 };
-
-function hashContent(content: string, isBinary: boolean): string {
-  return createHash("sha1").update(content).update(isBinary ? ":binary" : ":text").digest("hex");
-}
 
 export function createTransport(config: TransportConfig): TransportService {
   const { nodeName, port, crdt, logger } = config;
@@ -102,8 +71,6 @@ export function createTransport(config: TransportConfig): TransportService {
   const remoteManifests = new Map<string, TrackedFile[]>();
   const approvedPeers = new Set<string>();
   const remoteNodeInfo = new Map<string, NodeInfo>();
-  const remoteAppliedFiles = new Map<string, Map<string, RemoteAppliedFile>>();
-  const recentDisconnects: Array<{ peerName: string; reason: string; at: number }> = [];
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
@@ -112,105 +79,16 @@ export function createTransport(config: TransportConfig): TransportService {
   let notificationHandler: ((notification: TransportNotification) => void) | null = null;
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   const PING_INTERVAL_MS = 30000;
-  const sentFileHashes = new Map<string, Map<string, string>>();
 
   const notify = (notification: TransportNotification) => {
-    notificationHandler?.(notification);
-  };
-
-  const rememberDisconnect = (peerName: string, reason: string) => {
-    recentDisconnects.unshift({ peerName, reason, at: Date.now() });
-    while (recentDisconnects.length > 20) {
-      recentDisconnects.pop();
+    if (notificationHandler) {
+      notificationHandler(notification);
     }
   };
 
-  const setSentFileHash = (peerName: string, path: string, hash: string) => {
-    const perPeer = sentFileHashes.get(peerName) ?? new Map<string, string>();
-    perPeer.set(path, hash);
-    sentFileHashes.set(peerName, perPeer);
-  };
-
-  const setRemoteAppliedFile = (peerName: string, path: string, hash: string, appliedAt: number) => {
-    const perPeer = remoteAppliedFiles.get(peerName) ?? new Map<string, RemoteAppliedFile>();
-    perPeer.set(path, { path, hash, appliedAt });
-    remoteAppliedFiles.set(peerName, perPeer);
-  };
-
-  const sendNodeInfoToPeer = (peerName: string) => {
-    if (!nodeInfoProvider) return;
-    const info = nodeInfoProvider();
-    sendToPeer(peerName, {
-      type: "node_info",
-      nodeName: info.nodeName,
-      trackingDir: info.trackingDir,
-      trackingFileCount: info.trackingFileCount,
-      trackingFiles: info.trackingFiles,
-    });
-    logger.info(`Sent node_info to ${peerName}`);
-  };
-
-  const sendToPeer = (peerName: string, message: any) => {
-    const conn = connections.get(peerName);
-    if (conn && conn.socket.readyState === 1) {
-      conn.socket.send(JSON.stringify(message));
-    }
-  };
-
-  const finalizeApprovedConnection = (peerName: string, socket: any, host?: string) => {
-    const conn: Connection = {
-      peerName,
-      socket,
-      isAlive: true,
-      approved: true,
-    };
-    connections.set(peerName, conn);
-    approvedPeers.add(peerName);
-    notify({
-      type: "peer_connected",
-      peerName,
-      message: `Peer '${peerName}' is connected and approved.`,
-      data: host ? { host } : undefined,
-    });
-    sendNodeInfoToPeer(peerName);
-    if (manifestProvider) {
-      sendToPeer(peerName, {
-        type: "manifest",
-        files: manifestProvider(),
-        from: nodeName,
-      });
-    }
-    sendToPeer(peerName, { type: "manifest_request", from: nodeName });
-  };
-
-  const closePeer = (peerName: string, reason: string) => {
-    const pending = pendingConnections.get(peerName);
-    if (pending) {
-      pendingConnections.delete(peerName);
-      try {
-        pending.socket.close();
-      } catch {}
-    }
-
-    const conn = connections.get(peerName);
-    if (conn) {
-      connections.delete(peerName);
-      try {
-        conn.socket.close();
-      } catch {}
-      rememberDisconnect(peerName, reason);
-      notify({
-        type: "peer_disconnected",
-        peerName,
-        message: `Peer '${peerName}' disconnected (${reason}).`,
-        data: { reason },
-      });
-    }
-  };
-
-  const handleMessage = async (peerName: string, raw: string, approved: boolean) => {
+  const handleMessage = async (peerName: string, data: string, approved: boolean) => {
     try {
-      const message = JSON.parse(raw);
+      const message = JSON.parse(data);
 
       switch (message.type) {
         case "delta":
@@ -220,18 +98,14 @@ export function createTransport(config: TransportConfig): TransportService {
 
         case "sync_request":
           if (!approved) return;
-          sendToPeer(peerName, {
-            type: "sync_response",
-            file: message.file,
-            state: crdt.getState(message.file),
-          });
-          notify({
-            type: "sync_requested",
-            peerName,
-            filePath: message.file,
-            message: `Peer '${peerName}' requested sync state for '${message.file}'.`,
-            data: { file: message.file },
-          });
+          {
+            const state = crdt.getState(message.file);
+            sendToPeer(peerName, {
+              type: "sync_response",
+              file: message.file,
+              state,
+            });
+          }
           break;
 
         case "sync_response":
@@ -239,58 +113,73 @@ export function createTransport(config: TransportConfig): TransportService {
           crdt.mergeState(message.state, message.file);
           break;
 
-        case "approval_request": {
-          const pending = pendingConnections.get(peerName);
-          if (!pending) return;
-          notify({
-            type: "peer_pending",
-            message: `Peer '${peerName}' wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
-            peerName,
-            data: { host: pending.host, connectedAt: pending.connectedAt },
-          });
+        case "approval_request":
+          {
+            const pending = pendingConnections.get(peerName);
+            if (pending) {
+              logger.info(`Approval request from: ${peerName}`);
+              notify({
+                type: "peer_pending",
+                message: `Peer '${peerName}' wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
+                peerName,
+              });
+            }
+          }
           break;
-        }
 
         case "approval_response":
           if (message.approved) {
             const pending = pendingConnections.get(peerName);
-            if (!pending) return;
-            pendingConnections.delete(peerName);
-            finalizeApprovedConnection(peerName, pending.socket, pending.host);
-            notify({
-              type: "peer_approved",
-              message: `Peer '${peerName}' approved your connection request.`,
-              peerName,
-            });
+            if (pending) {
+              pendingConnections.delete(peerName);
+              const conn: Connection = {
+                peerName,
+                socket: pending.socket,
+                isAlive: true,
+                approved: true,
+              };
+              connections.set(peerName, conn);
+              approvedPeers.add(peerName);
+              notify({
+                type: "peer_approved",
+                message: `Peer '${peerName}' approved your connection request.`,
+                peerName,
+              });
+              exchangePeerState(peerName);
+            }
           } else {
             const pending = pendingConnections.get(peerName);
-            if (!pending) return;
-            pendingConnections.delete(peerName);
-            try {
+            if (pending) {
               pending.socket.close();
-            } catch {}
-            notify({
-              type: "peer_denied",
-              message: `Peer '${peerName}' denied your connection request.`,
-              peerName,
-            });
+              pendingConnections.delete(peerName);
+              notify({
+                type: "peer_denied",
+                message: `Peer '${peerName}' denied your connection request.`,
+                peerName,
+              });
+            }
           }
           break;
 
         case "node_info":
           if (!approved) return;
-          remoteNodeInfo.set(peerName, {
-            nodeName: message.nodeName,
-            trackingDir: message.trackingDir,
-            trackingFileCount: message.trackingFileCount,
-            trackingFiles: message.trackingFiles || [],
-          });
-          notify({
-            type: "node_info_received",
-            message: `Peer '${peerName}' shared tracking info.`,
-            peerName,
-            data: remoteNodeInfo.get(peerName) as Record<string, unknown>,
-          });
+          {
+            const info: NodeInfo = {
+              nodeName: message.nodeName,
+              trackingDir: message.trackingDir,
+              trackingFileCount: message.trackingFileCount,
+              trackingFiles: message.trackingFiles || [],
+            };
+            remoteNodeInfo.set(peerName, info);
+            const dirStr = info.trackingDir ? info.trackingDir : "none";
+            const fileStr = info.trackingFileCount > 0 ? `${info.trackingFileCount} file(s)` : "no files";
+            notify({
+              type: "node_info_received",
+              message: `Peer '${peerName}' info — tracking: ${dirStr} (${fileStr})`,
+              peerName,
+              data: info,
+            });
+          }
           break;
 
         case "manifest":
@@ -300,49 +189,35 @@ export function createTransport(config: TransportConfig): TransportService {
             type: "manifest_received",
             message: `Received manifest from '${peerName}' (${message.files.length} files).`,
             peerName,
-            data: { count: message.files.length, files: message.files },
+            data: message.files,
           });
           break;
 
         case "manifest_request":
-          if (!approved || !manifestProvider) return;
-          sendToPeer(peerName, {
-            type: "manifest",
-            files: manifestProvider(),
-            from: nodeName,
-          });
+          if (!approved) return;
+          {
+            if (manifestProvider) {
+              const localManifest = manifestProvider();
+              sendToPeer(peerName, {
+                type: "manifest",
+                files: localManifest,
+                from: nodeName,
+              });
+              logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+            }
+          }
           break;
 
         case "file_content":
           if (!approved) return;
           {
-            const filePath = message.path as string;
-            const content = message.content as string;
-            const isBinary = Boolean(message.isBinary);
-
-            notify({
-              type: "file_received",
-              peerName,
-              filePath,
-              message: `Received '${filePath}' from '${peerName}'.`,
-              data: {
-                host: message.host,
-                isBinary,
-                size: content.length,
-              },
-            });
+            const { path: filePath, content, isBinary } = message;
 
             if (isBinary) {
               crdt.applyRemoteBinary(filePath, content);
             } else {
               crdt.applyRemoteDelta(
-                {
-                  file: filePath,
-                  changes: [{ type: "replace", content }],
-                  timestamp: Date.now(),
-                  author: message.from || peerName,
-                  isBinary: false,
-                },
+                { file: filePath, changes: [{ type: "replace", content }], timestamp: Date.now(), author: message.from || peerName, isBinary: false },
                 filePath,
               );
             }
@@ -350,90 +225,41 @@ export function createTransport(config: TransportConfig): TransportService {
             if (fileWriter) {
               try {
                 await fileWriter(filePath, content, isBinary);
-                notify({
-                  type: "file_written",
-                  peerName,
-                  filePath,
-                  message: `Applied '${filePath}' from '${peerName}' to local disk.`,
-                  data: { isBinary, size: content.length },
-                });
-                sendToPeer(peerName, {
-                  type: "file_applied",
-                  path: filePath,
-                  hash: message.hash || hashContent(content, isBinary),
-                  from: nodeName,
-                  appliedAt: Date.now(),
-                });
+                logger.info(`Wrote received file to disk: ${filePath} from ${peerName}`);
               } catch (err) {
                 logger.error(`Failed to write received file ${filePath}: ${err}`);
-                notify({
-                  type: "sync_failed",
-                  peerName,
-                  filePath,
-                  message: `Failed to write '${filePath}' received from '${peerName}'.`,
-                  data: { error: String(err) },
-                });
               }
+            } else {
+              logger.info(`Received file (no writer): ${filePath} from ${peerName}`);
             }
-          }
-          break;
 
-        case "file_applied":
-          if (!approved) return;
-          {
-            const expectedHash = sentFileHashes.get(peerName)?.get(message.path);
-            const appliedHash = message.hash as string;
-            if (expectedHash && expectedHash !== appliedHash) {
-              notify({
-                type: "sync_failed",
-                peerName,
-                filePath: message.path,
-                message: `Peer '${peerName}' reported an unexpected applied hash for '${message.path}'.`,
-                data: { expectedHash, appliedHash },
-              });
-            }
-            setRemoteAppliedFile(peerName, message.path, appliedHash, message.appliedAt || Date.now());
+            notify({
+              type: "file_content" as any,
+              message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
+              peerName,
+              data: { file: filePath },
+            });
           }
-          notify({
-            type: "sync_applied",
-            peerName,
-            filePath: message.path,
-            message: `Peer '${peerName}' confirmed it wrote '${message.path}' locally.`,
-            data: { hash: message.hash, appliedAt: message.appliedAt || Date.now() },
-          });
           break;
 
         case "file_content_request":
-          if (!approved || !fileContentProvider) return;
+          if (!approved) return;
           {
-            const fileData = await fileContentProvider(message.path);
-            if (!fileData) {
-              notify({
-                type: "sync_failed",
-                peerName,
-                filePath: message.path,
-                message: `Peer '${peerName}' requested '${message.path}', but it was not found locally.`,
-                data: { direction: "outbound" },
-              });
-              return;
+            if (fileContentProvider) {
+              const fileData = await fileContentProvider(message.path);
+              if (fileData) {
+                sendToPeer(peerName, {
+                  type: "file_content",
+                  path: message.path,
+                  content: fileData.content,
+                  isBinary: fileData.isBinary,
+                  from: nodeName,
+                });
+                logger.info(`Sent requested file ${message.path} to ${peerName}`);
+              } else {
+                logger.warn(`Requested file not found: ${message.path}`);
+              }
             }
-            const hash = hashContent(fileData.content, fileData.isBinary);
-            setSentFileHash(peerName, message.path, hash);
-            sendToPeer(peerName, {
-              type: "file_content",
-              path: message.path,
-              content: fileData.content,
-              isBinary: fileData.isBinary,
-              from: nodeName,
-              hash,
-            });
-            notify({
-              type: "file_sent",
-              peerName,
-              filePath: message.path,
-              message: `Sent '${message.path}' to '${peerName}'.`,
-              data: { isBinary: fileData.isBinary, size: fileData.content.length, reason: "request" },
-            });
           }
           break;
 
@@ -441,9 +267,8 @@ export function createTransport(config: TransportConfig): TransportService {
           if (!approved) return;
           notify({
             type: "file_deleted",
-            message: `Peer '${peerName}' deleted '${message.path}'.`,
+            message: `Peer '${peerName}' deleted '${message.path}'. Keep your copy or say 'delete ${message.path} locally'.`,
             peerName,
-            filePath: message.path,
             data: { path: message.path },
           });
           break;
@@ -453,16 +278,47 @@ export function createTransport(config: TransportConfig): TransportService {
       }
     } catch (err) {
       logger.error(`Failed to handle message from ${peerName}: ${err}`);
-      notify({
-        type: "sync_failed",
-        peerName,
-        message: `Transport error while handling a message from '${peerName}'.`,
-        data: { error: String(err) },
-      });
     }
   };
 
-  const setupSocket = (socket: any, peerName: string) => {
+  const sendNodeInfoToPeer = (peerName: string) => {
+    if (nodeInfoProvider) {
+      const info = nodeInfoProvider();
+      sendToPeer(peerName, {
+        type: "node_info",
+        nodeName: info.nodeName,
+        trackingDir: info.trackingDir,
+        trackingFileCount: info.trackingFileCount,
+        trackingFiles: info.trackingFiles,
+      });
+      logger.info(`Sent node_info to ${peerName}`);
+    }
+  };
+
+  const exchangePeerState = (peerName: string) => {
+    sendNodeInfoToPeer(peerName);
+
+    if (manifestProvider) {
+      const localManifest = manifestProvider();
+      sendToPeer(peerName, {
+        type: "manifest",
+        files: localManifest,
+        from: nodeName,
+      });
+      logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+    }
+
+    sendToPeer(peerName, { type: "manifest_request", from: nodeName });
+  };
+
+  const sendToPeer = (peerName: string, message: any) => {
+    const conn = connections.get(peerName);
+    if (conn && conn.socket.readyState === 1) {
+      conn.socket.send(JSON.stringify(message));
+    }
+  };
+
+  const setupSocket = (socket: any, peerName: string, isIncoming: boolean) => {
     socket.on("message", (data: Buffer) => {
       const raw = data.toString();
       if (raw === "__ping__") {
@@ -477,112 +333,116 @@ export function createTransport(config: TransportConfig): TransportService {
 
       const pending = pendingConnections.get(peerName);
       if (pending) {
-        void handleMessage(peerName, raw, false);
-        return;
-      }
-
-      const conn = connections.get(peerName);
-      if (conn?.approved) {
-        void handleMessage(peerName, raw, true);
+        handleMessage(peerName, raw, false);
+      } else {
+        const conn = connections.get(peerName);
+        if (conn && conn.approved) {
+          handleMessage(peerName, raw, true);
+        }
       }
     });
 
     socket.on("close", () => {
       pendingConnections.delete(peerName);
-      const existed = connections.delete(peerName);
-      if (existed) {
-        rememberDisconnect(peerName, "socket_closed");
+      if (connections.has(peerName)) {
+        connections.delete(peerName);
         notify({
           type: "peer_disconnected",
-          message: `Peer '${peerName}' disconnected.`,
+          message: `Peer '${peerName}' disconnected (${connections.size} remaining).`,
           peerName,
-          data: { reason: "socket_closed" },
         });
       }
-      logger.info(`Peer disconnected: ${peerName}`);
+      logger.info(`Peer disconnected: ${peerName} (${connections.size} remaining)`);
     });
 
     socket.on("error", (err: Error) => {
       logger.error(`Connection error with ${peerName}: ${err}`);
       pendingConnections.delete(peerName);
-      const existed = connections.delete(peerName);
-      if (existed) {
-        rememberDisconnect(peerName, "socket_error");
-        notify({
-          type: "peer_disconnected",
-          peerName,
-          message: `Peer '${peerName}' disconnected because of a transport error.`,
-          data: { reason: "socket_error", error: String(err) },
-        });
-      }
+      connections.delete(peerName);
     });
   };
 
   return {
     async start() {
-      const { WebSocketServer } = await import("ws");
-      server = new WebSocketServer({ port });
+      try {
+        const { WebSocketServer } = await import("ws");
 
-      server.on("connection", (socket: any, req: any) => {
-        const peerName = (req.headers["x-mesh-node"] as string) || "unknown";
-        const host = req.socket.remoteAddress || "unknown";
+        server = new WebSocketServer({ port });
 
-        logger.info(`Incoming connection from: ${peerName} at ${host}`);
+        server.on("connection", (socket: any, req: any) => {
+          const peerName = (req.headers["x-mesh-node"] as string) || "unknown";
+          const host = req.socket.remoteAddress || "unknown";
 
-        if (connections.has(peerName)) {
-          closePeer(peerName, "replaced_by_new_connection");
-        }
+          logger.info(`Incoming connection from: ${peerName} at ${host}`);
 
-        if (approvedPeers.has(peerName)) {
-          finalizeApprovedConnection(peerName, socket, host);
-          setupSocket(socket, peerName);
-          return;
-        }
+          const alreadyApproved = approvedPeers.has(peerName);
+          const alreadyConnected = connections.has(peerName);
 
-        pendingConnections.set(peerName, {
-          peerName,
-          socket,
-          host,
-          connectedAt: Date.now(),
-        });
-        setupSocket(socket, peerName);
-        socket.send(
-          JSON.stringify({
-            type: "approval_request",
-            node: nodeName,
-          }),
-        );
-        notify({
-          type: "peer_pending",
-          message: `Peer '${peerName}' from ${host} wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
-          peerName,
-          data: { host, connectedAt: Date.now() },
-        });
-      });
+          if (alreadyConnected) {
+            const old = connections.get(peerName)!;
+            old.socket.close();
+            connections.delete(peerName);
+          }
 
-      keepaliveTimer = setInterval(() => {
-        for (const [name, conn] of connections) {
-          if (!conn.isAlive) {
-            logger.warn(`Peer ${name} missed ping, closing connection`);
-            try {
-              conn.socket.terminate();
-            } catch {}
-            connections.delete(name);
-            rememberDisconnect(name, "ping_timeout");
+          if (alreadyApproved) {
+            const conn: Connection = {
+              peerName,
+              socket,
+              isAlive: true,
+              approved: true,
+            };
+            connections.set(peerName, conn);
+            setupSocket(socket, peerName, true);
+            logger.info(`Auto-approved reconnection from: ${peerName}`);
+            exchangePeerState(peerName);
+          } else {
+            const pending: PendingConnection = {
+              peerName,
+              socket,
+              host,
+              connectedAt: Date.now(),
+            };
+            pendingConnections.set(peerName, pending);
+            setupSocket(socket, peerName, true);
+
+            socket.send(JSON.stringify({
+              type: "approval_request",
+              node: nodeName,
+            }));
+
             notify({
-              type: "peer_disconnected",
-              peerName: name,
-              message: `Peer '${name}' disconnected after missing a keepalive ping.`,
-              data: { reason: "ping_timeout" },
+              type: "peer_pending",
+              message: `Peer '${peerName}' from ${host} wants to join the mesh. Ask the user if they want to approve or deny this connection. Do NOT approve or deny on your own — wait for the user's decision.`,
+              peerName,
             });
-            continue;
           }
-          conn.isAlive = false;
-          if (conn.socket.readyState === 1) {
-            conn.socket.send("__ping__");
+        });
+
+        logger.info(`Mesh transport server started on port ${port}`);
+
+        keepaliveTimer = setInterval(() => {
+          for (const [name, conn] of connections) {
+            if (!conn.isAlive) {
+              logger.warn(`Peer ${name} missed ping, closing connection`);
+              conn.socket.terminate();
+              connections.delete(name);
+              notify({
+                type: "peer_disconnected",
+                message: `Peer '${name}' disconnected (missed ping, ${connections.size} remaining).`,
+                peerName: name,
+              });
+              continue;
+            }
+            conn.isAlive = false;
+            if (conn.socket.readyState === 1) {
+              conn.socket.send("__ping__");
+            }
           }
-        }
-      }, PING_INTERVAL_MS);
+        }, PING_INTERVAL_MS);
+      } catch (err) {
+        logger.error(`Failed to start transport server: ${err}`);
+        throw err;
+      }
     },
 
     async stop() {
@@ -590,26 +450,29 @@ export function createTransport(config: TransportConfig): TransportService {
         clearInterval(keepaliveTimer);
         keepaliveTimer = null;
       }
-      for (const [peerName] of connections) {
-        closePeer(peerName, "shutdown");
+
+      for (const [, conn] of connections) {
+        conn.socket.close();
       }
+      connections.clear();
       for (const [, pending] of pendingConnections) {
-        try {
-          pending.socket.close();
-        } catch {}
+        pending.socket.close();
       }
       pendingConnections.clear();
+
       if (server) {
         await new Promise<void>((resolve) => {
-          server.close(() => resolve());
+          server.close(() => {
+            logger.info("Transport server stopped");
+            resolve();
+          });
         });
       }
     },
 
     async connectToPeer(peer: PeerInfo) {
-      if (connections.has(peer.name) || pendingConnections.has(peer.name)) {
-        return true;
-      }
+      if (connections.has(peer.name)) return true;
+      if (pendingConnections.has(peer.name)) return true;
 
       try {
         const wsModule = await import("ws");
@@ -621,42 +484,58 @@ export function createTransport(config: TransportConfig): TransportService {
 
         await new Promise<void>((resolve, reject) => {
           ws.on("open", () => {
-            if (approvedPeers.has(peer.name)) {
-              finalizeApprovedConnection(peer.name, ws, peer.host);
+            const alreadyApproved = approvedPeers.has(peer.name);
+
+            if (alreadyApproved) {
+              const conn: Connection = {
+                peerName: peer.name,
+                socket: ws,
+                isAlive: true,
+                approved: true,
+              };
+              connections.set(peer.name, conn);
+              setupSocket(ws, peer.name, false);
+              logger.info(`Connected to approved peer: ${peer.name} at ${peer.host}:${peer.port}`);
             } else {
-              pendingConnections.set(peer.name, {
+              const pending: PendingConnection = {
                 peerName: peer.name,
                 socket: ws,
                 host: peer.host,
                 connectedAt: Date.now(),
-              });
+              };
+              pendingConnections.set(peer.name, pending);
+              setupSocket(ws, peer.name, false);
+              logger.info(`Connected to peer (awaiting approval): ${peer.name} at ${peer.host}:${peer.port}`);
             }
-            setupSocket(ws, peer.name);
+
             resolve();
           });
-          ws.on("error", (err: Error) => reject(err));
+
+          ws.on("error", (err: Error) => {
+            logger.error(`Failed to connect to ${peer.name}: ${err}`);
+            reject(err);
+          });
         });
 
         return true;
       } catch (err) {
         logger.error(`Connection to ${peer.name} failed: ${err}`);
-        notify({
-          type: "sync_failed",
-          peerName: peer.name,
-          message: `Failed to connect to '${peer.name}'.`,
-          data: { host: peer.host, port: peer.port, error: String(err) },
-        });
         return false;
       }
     },
 
     broadcast(message: any) {
       const data = JSON.stringify(message);
+      let sent = 0;
+
       for (const [, conn] of connections) {
         if (conn.approved && conn.socket.readyState === 1) {
           conn.socket.send(data);
+          sent++;
         }
       }
+
+      logger.debug(`Broadcast to ${sent} approved peers`);
     },
 
     sendToPeer,
@@ -669,53 +548,61 @@ export function createTransport(config: TransportConfig): TransportService {
       return Array.from(pendingConnections.values());
     },
 
-    approveConnection(peerName: string) {
+    approveConnection(peerName: string): boolean {
       const pending = pendingConnections.get(peerName);
       if (!pending) return false;
 
       pendingConnections.delete(peerName);
-      finalizeApprovedConnection(peerName, pending.socket, pending.host);
+      const conn: Connection = {
+        peerName,
+        socket: pending.socket,
+        isAlive: true,
+        approved: true,
+      };
+      connections.set(peerName, conn);
+      approvedPeers.add(peerName);
+
       sendToPeer(peerName, {
         type: "approval_response",
         approved: true,
         node: nodeName,
       });
+
+      logger.info(`Approved peer: ${peerName}`);
       notify({
         type: "peer_approved",
-        message: `Approved peer '${peerName}'. Info and manifests will be exchanged automatically.`,
+        message: `Approved peer '${peerName}'. Info will be exchanged.`,
         peerName,
-        data: { host: pending.host },
       });
+      exchangePeerState(peerName);
+
       return true;
     },
 
-    denyConnection(peerName: string) {
+    denyConnection(peerName: string): boolean {
       const pending = pendingConnections.get(peerName);
       if (!pending) return false;
 
+      sendToPeer(peerName, {
+        type: "approval_response",
+        approved: false,
+        node: nodeName,
+      });
+
+      pending.socket.close();
       pendingConnections.delete(peerName);
-      try {
-        pending.socket.send(
-          JSON.stringify({
-            type: "approval_response",
-            approved: false,
-            node: nodeName,
-          }),
-        );
-      } catch {}
-      try {
-        pending.socket.close();
-      } catch {}
+
+      logger.info(`Denied peer: ${peerName}`);
       notify({
         type: "peer_denied",
         message: `Denied peer '${peerName}'.`,
         peerName,
-        data: { host: pending.host },
       });
+
       return true;
     },
 
-    getRemoteManifest(peerName: string) {
+    getRemoteManifest(peerName: string): TrackedFile[] | null {
       return remoteManifests.get(peerName) || null;
     },
 
@@ -724,22 +611,12 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     sendFileContent(peerName: string, relativePath: string, content: string, isBinary: boolean) {
-      const hash = hashContent(content, isBinary);
-      setSentFileHash(peerName, relativePath, hash);
       sendToPeer(peerName, {
         type: "file_content",
         path: relativePath,
         content,
         isBinary,
         from: nodeName,
-        hash,
-      });
-      notify({
-        type: "file_sent",
-        peerName,
-        filePath: relativePath,
-        message: `Sent '${relativePath}' to '${peerName}'.`,
-        data: { isBinary, size: content.length, reason: "push" },
       });
     },
 
@@ -748,13 +625,6 @@ export function createTransport(config: TransportConfig): TransportService {
         type: "file_content_request",
         path: relativePath,
         from: nodeName,
-      });
-      notify({
-        type: "sync_requested",
-        peerName,
-        filePath: relativePath,
-        message: `Requested '${relativePath}' from '${peerName}'.`,
-        data: { direction: "pull" },
       });
     },
 
@@ -767,69 +637,50 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     notifyFileDeleted(relativePath: string) {
-      const payload = JSON.stringify({
-        type: "file_deleted",
-        path: relativePath,
-        from: nodeName,
-      });
+      const msg = { type: "file_deleted", path: relativePath, from: nodeName };
+      const data = JSON.stringify(msg);
       for (const [, conn] of connections) {
         if (conn.approved && conn.socket.readyState === 1) {
-          conn.socket.send(payload);
+          conn.socket.send(data);
         }
       }
     },
 
-    setNotificationHandler(handler) {
+    setNotificationHandler(handler: (notification: TransportNotification) => void) {
       notificationHandler = handler;
     },
 
     async maintainConnections() {
-      for (const [name, conn] of [...connections]) {
+      for (const [name, conn] of connections) {
         if (conn.socket.readyState === 3) {
           connections.delete(name);
-          rememberDisconnect(name, "closed_ready_state");
           notify({
             type: "peer_disconnected",
+            message: `Peer '${name}' disconnected (${connections.size} remaining).`,
             peerName: name,
-            message: `Peer '${name}' disconnected.`,
-            data: { reason: "closed_ready_state" },
           });
         }
       }
-
-      for (const [name, pending] of [...pendingConnections]) {
-        if (pending.socket.readyState === 3) {
-          pendingConnections.delete(name);
-        }
-      }
     },
 
-    getNodeInfo(peerName: string) {
+    getNodeInfo(peerName: string): NodeInfo | null {
       return remoteNodeInfo.get(peerName) || null;
     },
 
-    setNodeInfoProvider(provider) {
+    setNodeInfoProvider(provider: () => NodeInfo) {
       nodeInfoProvider = provider;
     },
 
-    setFileContentProvider(provider) {
+    setFileContentProvider(provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) {
       fileContentProvider = provider;
     },
 
-    setManifestProvider(provider) {
+    setManifestProvider(provider: () => TrackedFile[]) {
       manifestProvider = provider;
     },
 
-    setFileWriter(writer) {
+    setFileWriter(writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) {
       fileWriter = writer;
-    },
-
-    getRemoteAppliedFiles(peerName: string) {
-      return Array.from(remoteAppliedFiles.get(peerName)?.values() || []).sort((a, b) => b.appliedAt - a.appliedAt);
-    },
-
-    getRecentDisconnects() {
-      return [...recentDisconnects];
     },
   };
 }

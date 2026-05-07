@@ -45,10 +45,21 @@ export function createMeshStatusTool(services, _ctx) {
                 for (const name of connections) {
                     const manifest = transport.getRemoteManifest(name);
                     const info = transport.getNodeInfo(name);
-                    message += `    ${name} ${manifest ? `(${manifest.length} files)` : "(no manifest)"}`;
+                    message += `    ${name}`;
                     if (info) {
                         const dirStr = info.trackingDir || "not tracking";
                         message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+                        if (info.trackingFiles.length > 0) {
+                            message += ` | files: ${info.trackingFiles.join(", ")}`;
+                        }
+                    }
+                    message += manifest ? ` | remote manifest: ${manifest.length} files` : " | remote manifest: none";
+                    if (manifest && info) {
+                        const manifestFiles = new Set(manifest.map((file) => file.relativePath));
+                        const remoteFiles = new Set(info.trackingFiles);
+                        const localOnly = [...remoteFiles].filter((file) => !manifestFiles.has(file)).length;
+                        const remoteOnly = [...manifestFiles].filter((file) => !remoteFiles.has(file)).length;
+                        message += ` | delta: ${localOnly} local-only / ${remoteOnly} remote-only`;
                     }
                     message += `\n`;
                 }

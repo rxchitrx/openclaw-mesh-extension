@@ -3,6 +3,11 @@ export type PeerInfo = {
     host: string;
     port: number;
     lastSeen: number;
+    source?: "mdns" | "transport" | "subnet-scan" | "ping";
+    lastPingSeen?: number;
+    lastMdnsSeen?: number;
+    lastTransportSeen?: number;
+    lastScanSeen?: number;
 };
 export type DiscoveryConfig = {
     nodeName: string;

@@ -75,7 +75,7 @@ export function createTransport(config) {
                                 message: `Peer '${peerName}' approved your connection request.`,
                                 peerName,
                             });
-                            sendNodeInfoToPeer(peerName);
+                            exchangePeerState(peerName);
                         }
                     }
                     else {
@@ -222,6 +222,19 @@ export function createTransport(config) {
             logger.info(`Sent node_info to ${peerName}`);
         }
     };
+    const exchangePeerState = (peerName) => {
+        sendNodeInfoToPeer(peerName);
+        if (manifestProvider) {
+            const localManifest = manifestProvider();
+            sendToPeer(peerName, {
+                type: "manifest",
+                files: localManifest,
+                from: nodeName,
+            });
+            logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+        }
+        sendToPeer(peerName, { type: "manifest_request", from: nodeName });
+    };
     const sendToPeer = (peerName, message) => {
         const conn = connections.get(peerName);
         if (conn && conn.socket.readyState === 1) {
@@ -297,6 +310,7 @@ export function createTransport(config) {
                         connections.set(peerName, conn);
                         setupSocket(socket, peerName, true);
                         logger.info(`Auto-approved reconnection from: ${peerName}`);
+                        exchangePeerState(peerName);
                     }
                     else {
                         const pending = {
@@ -459,7 +473,7 @@ export function createTransport(config) {
                 message: `Approved peer '${peerName}'. Info will be exchanged.`,
                 peerName,
             });
-            sendNodeInfoToPeer(peerName);
+            exchangePeerState(peerName);
             return true;
         },
         denyConnection(peerName) {
@@ -485,7 +499,7 @@ export function createTransport(config) {
             return remoteManifests.get(peerName) || null;
         },
         requestManifest(peerName) {
-            sendToPeer(peerName, { type: "manifest_request" });
+            sendToPeer(peerName, { type: "manifest_request", from: nodeName });
         },
         sendFileContent(peerName, relativePath, content, isBinary) {
             sendToPeer(peerName, {

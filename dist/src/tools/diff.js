@@ -33,7 +33,21 @@ export function createMeshDiffTool(services, _ctx) {
                 else {
                     for (const name of peersWithManifests) {
                         const manifest = transport.getRemoteManifest(name);
-                        message += `  ${name}: ${manifest.length} files\n`;
+                        const info = transport.getNodeInfo(name);
+                        message += `  ${name}`;
+                        if (info) {
+                            const dirStr = info.trackingDir || "not tracking";
+                            message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+                        }
+                        message += ` | remote manifest: ${manifest.length} files`;
+                        if (info) {
+                            const remoteFiles = new Set(info.trackingFiles);
+                            const manifestFiles = new Set(manifest.map((file) => file.relativePath));
+                            const localOnly = [...remoteFiles].filter((file) => !manifestFiles.has(file)).length;
+                            const remoteOnly = [...manifestFiles].filter((file) => !remoteFiles.has(file)).length;
+                            message += ` | delta: ${localOnly} local-only / ${remoteOnly} remote-only`;
+                        }
+                        message += `\n`;
                     }
                     message += `\nSay 'diff with <peerName>' to compare files.`;
                 }
@@ -52,6 +66,7 @@ export function createMeshDiffTool(services, _ctx) {
             const localManifest = getLocalManifest();
             const localMap = new Map(localManifest.map((f) => [f.relativePath, f]));
             const remoteMap = new Map(remoteManifest.map((f) => [f.relativePath, f]));
+            const info = transport.getNodeInfo(peerName);
             const localOnly = [];
             const remoteOnly = [];
             const modified = [];
@@ -76,6 +91,16 @@ export function createMeshDiffTool(services, _ctx) {
                 }
             }
             let message = `DIFF: local vs ${peerName}\n\n`;
+            if (info) {
+                const dirStr = info.trackingDir || "not tracking";
+                message += `REMOTE NODE INFO:\n`;
+                message += `  Tracking dir: ${dirStr}\n`;
+                message += `  Tracking files: ${info.trackingFileCount}\n`;
+                if (info.trackingFiles.length > 0) {
+                    message += `  Files: ${info.trackingFiles.join(", ")}\n`;
+                }
+                message += `\n`;
+            }
             if (localOnly.length > 0) {
                 message += `LOCAL ONLY (you have, they don't):\n`;
                 for (const f of localOnly) {
