@@ -2,12 +2,14 @@ import { createCRDT, type CRDTService } from "./src/crdt.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
 import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
 import { createMeshBroadcastTool } from "./src/tools/broadcast.js";
+import { createMeshConnectionsTool } from "./src/tools/connections.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
 import { createMeshStatusTool } from "./src/tools/status.js";
 import { createMeshSyncTool } from "./src/tools/sync.js";
 import { createMeshTrackTool } from "./src/tools/track.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
+import { createMeshRejectTool } from "./src/tools/reject.js";
 import { createTransport, type TransportService, type TransportNotification } from "./src/transport.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -169,6 +171,10 @@ const meshPlugin = {
     );
     api.registerTool((ctx: any) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
     api.registerTool((ctx: any) => createMeshApproveTool(transport, ctx), { name: "mesh_approve" });
+    api.registerTool((ctx: any) => createMeshRejectTool(transport, ctx), { name: "mesh_reject" });
+    api.registerTool((ctx: any) => createMeshConnectionsTool(transport, ctx), {
+      name: "mesh_connections",
+    });
     api.registerTool(
       (ctx: any) => createMeshDiffTool({ transport, getLocalManifest }, ctx),
       { name: "mesh_diff" },
