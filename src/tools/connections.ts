@@ -39,6 +39,9 @@ export function createMeshConnectionsTool(
         for (const peerName of connections) {
           const manifest = transport.getRemoteManifest(peerName);
           const info = transport.getNodeInfo(peerName);
+          const applied = transport.getRemoteAppliedFiles(peerName);
+          const rejected = transport.getRemoteRejectedFiles(peerName);
+          const inFlight = transport.getInFlightSends(peerName);
           const lastEvent = recentEvents.find((event) => event.peerName === peerName);
           message += `  ${peerName}`;
           if (manifest) {
@@ -47,6 +50,17 @@ export function createMeshConnectionsTool(
           if (info) {
             const trackDir = info.trackingDir || "not tracking";
             message += ` | tracking: ${trackDir} (${info.trackingFileCount} files)`;
+          }
+          if (inFlight.length > 0) {
+            message += ` | in-flight: ${inFlight.length}`;
+          }
+          if (applied.length > 0) {
+            const lastApplied = applied[applied.length - 1];
+            message += ` | last applied: ${lastApplied.path}${lastApplied.hash ? `@${lastApplied.hash.slice(0, 8)}` : ""}`;
+          }
+          if (rejected.length > 0) {
+            const lastRejected = rejected[rejected.length - 1];
+            message += ` | last rejected: ${lastRejected.path} (${lastRejected.reason})`;
           }
           if (lastEvent) {
             message += ` | last event: ${lastEvent.kind}`;
@@ -66,6 +80,12 @@ export function createMeshConnectionsTool(
             peerName: item.peerName,
             host: item.host,
             connectedAt: item.connectedAt,
+          })),
+          peerState: connections.map((peerName) => ({
+            peerName,
+            remoteAppliedFiles: transport.getRemoteAppliedFiles(peerName),
+            remoteRejectedFiles: transport.getRemoteRejectedFiles(peerName),
+            inFlightSends: transport.getInFlightSends(peerName),
           })),
         },
       };

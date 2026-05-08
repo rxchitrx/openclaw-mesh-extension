@@ -32,8 +32,31 @@ export type NodeInfo = {
 
 export type RemoteApplyRecord = {
   path: string;
+  hash?: string;
   appliedAt: number;
   from: string;
+};
+
+export type RemoteRejectRecord = {
+  path: string;
+  hash?: string;
+  rejectedAt: number;
+  from: string;
+  reason: string;
+};
+
+export type InFlightSendRecord = {
+  path: string;
+  hash?: string;
+  sentAt: number;
+  peerName: string;
+};
+
+export type FilePreview = {
+  path: string;
+  content: string;
+  isBinary: boolean;
+  hash?: string | null;
 };
 
 export type TransportNotification = {
@@ -53,7 +76,9 @@ export type TransportNotification = {
     | "sync_failed"
     | "file_sent"
     | "file_received"
-    | "file_written";
+    | "file_written"
+    | "file_rejected"
+    | "file_preview";
   message: string;
   peerName?: string;
   filePath?: string;
@@ -74,12 +99,15 @@ export type TransportService = {
   requestManifest: (peerName: string) => void;
   sendFileContent: (peerName: string, relativePath: string, content: string, isBinary: boolean) => void;
   requestFileContent: (peerName: string, relativePath: string) => void;
+  requestFilePreview: (peerName: string, relativePath: string, timeoutMs?: number) => Promise<FilePreview | null>;
   sendLocalManifest: (peerName: string, manifest: TrackedFile[]) => void;
   notifyFileDeleted: (relativePath: string) => void;
   setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
   maintainConnections: () => Promise<void>;
   getNodeInfo: (peerName: string) => NodeInfo | null;
   getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
+  getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
+  getInFlightSends: (peerName?: string) => InFlightSendRecord[];
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
   setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
   setManifestProvider: (provider: () => TrackedFile[]) => void;
@@ -96,6 +124,12 @@ export function createTransport(config: TransportConfig): TransportService {
   const approvedPeers = new Set<string>();
   const remoteNodeInfo = new Map<string, NodeInfo>();
   const remoteAppliedFiles = new Map<string, RemoteApplyRecord[]>();
+  const remoteRejectedFiles = new Map<string, RemoteRejectRecord[]>();
+  const inFlightSends = new Map<string, InFlightSendRecord>();
+  const previewRequests = new Map<string, {
+    resolve: (preview: FilePreview | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
@@ -110,6 +144,17 @@ export function createTransport(config: TransportConfig): TransportService {
     if (notificationHandler) {
       notificationHandler(notification);
     }
+  };
+
+  const sendFileRejected = (peerName: string, relativePath: string, reason: string, hash?: string | null) => {
+    sendToPeer(peerName, {
+      type: "file_rejected",
+      path: relativePath,
+      hash,
+      reason,
+      from: nodeName,
+      rejectedAt: Date.now(),
+    });
   };
 
   const handleMessage = async (peerName: string, data: string, approved: boolean) => {
@@ -219,6 +264,7 @@ export function createTransport(config: TransportConfig): TransportService {
 
             if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
               logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+              sendFileRejected(peerName, filePath, "conflict", remoteHash);
               notify({
                 type: "file_conflict",
                 message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
@@ -240,6 +286,7 @@ export function createTransport(config: TransportConfig): TransportService {
                 sendToPeer(peerName, {
                   type: "file_applied",
                   path: filePath,
+                  hash: remoteHash,
                   from: nodeName,
                   appliedAt: Date.now(),
                 });
@@ -252,6 +299,7 @@ export function createTransport(config: TransportConfig): TransportService {
                 });
               } catch (err) {
                 logger.error(`Failed to write received file ${filePath}: ${err}`);
+                sendFileRejected(peerName, filePath, "write_failed", remoteHash);
                 notify({
                   type: "sync_failed",
                   message: `Failed to write '${filePath}' from '${peerName}' to disk.`,
@@ -271,6 +319,63 @@ export function createTransport(config: TransportConfig): TransportService {
               filePath,
               data: { file: filePath, isBinary },
             });
+          }
+          break;
+
+        case "file_preview_request":
+          if (!approved) return;
+          {
+            const requestId = message.requestId;
+            if (!requestId || !fileContentProvider) {
+              return;
+            }
+            const fileData = await fileContentProvider(message.path);
+            if (fileData) {
+              sendToPeer(peerName, {
+                type: "file_preview_response",
+                requestId,
+                path: message.path,
+                content: fileData.content,
+                isBinary: fileData.isBinary,
+                hash: syncState.getLocalHash(message.path),
+                from: nodeName,
+              });
+            } else {
+              sendToPeer(peerName, {
+                type: "file_preview_response",
+                requestId,
+                path: message.path,
+                error: "file_not_found",
+                from: nodeName,
+              });
+            }
+          }
+          break;
+
+        case "file_preview_response":
+          if (!approved) return;
+          {
+            const request = previewRequests.get(message.requestId);
+            if (!request) return;
+            clearTimeout(request.timer);
+            previewRequests.delete(message.requestId);
+            if (message.error) {
+              notify({
+                type: "file_preview",
+                message: `Could not preview '${message.path}' from '${peerName}': ${message.error}.`,
+                peerName,
+                filePath: message.path,
+                data: { error: message.error, file: message.path },
+              });
+              request.resolve(null);
+            } else {
+              request.resolve({
+                path: message.path,
+                content: message.content,
+                isBinary: !!message.isBinary,
+                hash: message.hash,
+              });
+            }
           }
           break;
 
@@ -316,6 +421,7 @@ export function createTransport(config: TransportConfig): TransportService {
           {
             const record: RemoteApplyRecord = {
               path: message.path,
+              hash: message.hash,
               appliedAt: typeof message.appliedAt === "number" ? message.appliedAt : Date.now(),
               from: message.from || peerName,
             };
@@ -323,9 +429,48 @@ export function createTransport(config: TransportConfig): TransportService {
             const next = existing.filter((item) => item.path !== record.path);
             next.push(record);
             remoteAppliedFiles.set(peerName, next.slice(-500));
+            const inFlightKey = `${peerName}:${record.path}`;
+            const inFlight = inFlightSends.get(inFlightKey);
+            if (inFlight && (!record.hash || !inFlight.hash || record.hash === inFlight.hash)) {
+              inFlightSends.delete(inFlightKey);
+              const syncedHash = record.hash || inFlight.hash;
+              const stillInFlightForPath = [...inFlightSends.values()].some((item) => item.path === record.path && item.hash === syncedHash);
+              const rejectedForHash = [...remoteRejectedFiles.values()]
+                .flat()
+                .some((item) => item.path === record.path && (!item.hash || item.hash === syncedHash));
+              if (syncedHash && syncedHash === syncState.getLocalHash(record.path) && !stillInFlightForPath && !rejectedForHash) {
+                syncState.recordSyncedHash(record.path, syncedHash);
+                syncState.clearPendingChanges([record.path]);
+              }
+            }
             notify({
               type: "sync_applied",
-              message: `Peer '${peerName}' applied '${record.path}' to disk.`,
+              message: `Peer '${peerName}' applied '${record.path}' to disk${record.hash ? ` (${record.hash.slice(0, 8)})` : ""}.`,
+              peerName,
+              filePath: record.path,
+              data: record,
+            });
+          }
+          break;
+
+        case "file_rejected":
+          if (!approved) return;
+          {
+            const record: RemoteRejectRecord = {
+              path: message.path,
+              hash: message.hash,
+              rejectedAt: typeof message.rejectedAt === "number" ? message.rejectedAt : Date.now(),
+              from: message.from || peerName,
+              reason: message.reason || "unknown",
+            };
+            const existing = remoteRejectedFiles.get(peerName) || [];
+            const next = existing.filter((item) => item.path !== record.path);
+            next.push(record);
+            remoteRejectedFiles.set(peerName, next.slice(-500));
+            inFlightSends.delete(`${peerName}:${record.path}`);
+            notify({
+              type: "file_rejected",
+              message: `Peer '${peerName}' rejected '${record.path}' (${record.reason}).`,
               peerName,
               filePath: record.path,
               data: record,
@@ -533,6 +678,12 @@ export function createTransport(config: TransportConfig): TransportService {
         keepaliveTimer = null;
       }
 
+      for (const [, request] of previewRequests) {
+        clearTimeout(request.timer);
+        request.resolve(null);
+      }
+      previewRequests.clear();
+
       for (const [, conn] of connections) {
         conn.socket.close();
       }
@@ -702,6 +853,12 @@ export function createTransport(config: TransportConfig): TransportService {
         hash: localHash,
         from: nodeName,
       });
+      inFlightSends.set(`${peerName}:${relativePath}`, {
+        peerName,
+        path: relativePath,
+        hash: localHash || undefined,
+        sentAt: Date.now(),
+      });
       notify({
         type: "file_sent",
         message: `Sent '${relativePath}' to '${peerName}'.`,
@@ -716,6 +873,34 @@ export function createTransport(config: TransportConfig): TransportService {
         type: "file_content_request",
         path: relativePath,
         from: nodeName,
+      });
+    },
+
+    requestFilePreview(peerName: string, relativePath: string, timeoutMs = 5000) {
+      const conn = connections.get(peerName);
+      if (!conn || !conn.approved || conn.socket.readyState !== 1) {
+        return Promise.resolve(null);
+      }
+      const requestId = `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise<FilePreview | null>((resolve) => {
+        const timer = setTimeout(() => {
+          previewRequests.delete(requestId);
+          notify({
+            type: "file_preview",
+            message: `Timed out previewing '${relativePath}' from '${peerName}'.`,
+            peerName,
+            filePath: relativePath,
+            data: { file: relativePath, timeoutMs },
+          });
+          resolve(null);
+        }, timeoutMs);
+        previewRequests.set(requestId, { resolve, timer });
+        sendToPeer(peerName, {
+          type: "file_preview_request",
+          requestId,
+          path: relativePath,
+          from: nodeName,
+        });
       });
     },
 
@@ -760,6 +945,15 @@ export function createTransport(config: TransportConfig): TransportService {
 
     getRemoteAppliedFiles(peerName: string): RemoteApplyRecord[] {
       return [...(remoteAppliedFiles.get(peerName) || [])];
+    },
+
+    getRemoteRejectedFiles(peerName: string): RemoteRejectRecord[] {
+      return [...(remoteRejectedFiles.get(peerName) || [])];
+    },
+
+    getInFlightSends(peerName?: string): InFlightSendRecord[] {
+      const records = [...inFlightSends.values()];
+      return peerName ? records.filter((record) => record.peerName === peerName) : records;
     },
 
     setNodeInfoProvider(provider: () => NodeInfo) {

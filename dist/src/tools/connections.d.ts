@@ -25,6 +25,12 @@ export declare function createMeshConnectionsTool(services: {
                 host: string;
                 connectedAt: number;
             }[];
+            peerState: {
+                peerName: string;
+                remoteAppliedFiles: import("../transport.js").RemoteApplyRecord[];
+                remoteRejectedFiles: import("../transport.js").RemoteRejectRecord[];
+                inFlightSends: import("../transport.js").InFlightSendRecord[];
+            }[];
         };
     }>;
 };

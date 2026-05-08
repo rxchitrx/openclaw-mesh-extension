@@ -9,7 +9,6 @@ export type BroadcastServices = {
         isBinary: boolean;
     } | null>;
     getLocalManifest: () => TrackedFile[];
-    nodeName: string;
 };
 export declare function createMeshBroadcastTool(services: BroadcastServices, _ctx: any): {
     label: string;
@@ -36,6 +35,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
             ok: boolean;
             error: string;
             filesSent?: undefined;
+            transfersSent?: undefined;
             files?: undefined;
             peerCount?: undefined;
             timestamp?: undefined;
@@ -49,6 +49,7 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
             ok: boolean;
             filesSent: number;
             error?: undefined;
+            transfersSent?: undefined;
             files?: undefined;
             peerCount?: undefined;
             timestamp?: undefined;
@@ -60,11 +61,12 @@ export declare function createMeshBroadcastTool(services: BroadcastServices, _ct
         }[];
         details: {
             ok: boolean;
-            filesSent: number;
+            transfersSent: number;
             files: string[];
             peerCount: number;
             timestamp: string;
             error?: undefined;
+            filesSent?: undefined;
         };
     }>;
 };

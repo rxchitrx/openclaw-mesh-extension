@@ -102,7 +102,7 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
         transport.sendFileContent(peerName, file, fileData.content, fileData.isBinary);
 
         return {
-          content: [{ type: "text" as const, text: `Pushed '${file}' to '${peerName}' (${fileData.content.length} chars, ${fileData.isBinary ? "binary" : "text"}).` }],
+          content: [{ type: "text" as const, text: `Sent '${file}' to '${peerName}' (${fileData.content.length} chars, ${fileData.isBinary ? "binary" : "text"}). It stays pending until the peer confirms file_applied.` }],
           details: { ok: true, action: "push", peerName, file },
         };
       }
@@ -175,7 +175,7 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
         }
 
         return {
-          content: [{ type: "text" as const, text: `Pushed ${sentCount} file(s) to '${peerName}'.` }],
+          content: [{ type: "text" as const, text: `Sent ${sentCount} file(s) to '${peerName}'. Pending changes clear after matching file_applied confirmations.` }],
           details: { ok: true, action: "push-all", peerName, filesSent: sentCount, files: toPush.map((f) => f.relativePath) },
         };
       }

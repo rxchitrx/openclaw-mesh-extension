@@ -43,6 +43,8 @@ function mapTransportEventKind(type) {
             return "file_received";
         case "file_written":
             return "file_written";
+        case "file_rejected":
+            return "file_rejected";
         case "file_conflict":
         case "conflict":
             return "conflict";
@@ -242,7 +244,7 @@ const meshPlugin = {
         }
         api.registerTool((ctx) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
         api.registerTool((ctx) => createMeshStatusTool({ discovery, transport, syncState, getTrackState }, ctx), { name: "mesh_status" });
-        api.registerTool((ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest, nodeName }, ctx), { name: "mesh_broadcast" });
+        api.registerTool((ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx), { name: "mesh_broadcast" });
         api.registerTool((ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx), { name: "mesh_sync" });
         api.registerTool((ctx) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
         api.registerTool((ctx) => createMeshApproveTool(transport, ctx), { name: "mesh_approve" });
@@ -250,7 +252,7 @@ const meshPlugin = {
         api.registerTool((ctx) => createMeshConnectionsTool({ transport, eventStore }, ctx), {
             name: "mesh_connections",
         });
-        api.registerTool((ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest }, ctx), { name: "mesh_diff" });
+        api.registerTool((ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx), { name: "mesh_diff" });
         api.registerTool((ctx) => createMeshEventsTool(eventStore, ctx), { name: "mesh_events" });
         api.registerTool((ctx) => createMeshAckTool(eventStore, ctx), { name: "mesh_ack" });
         api.on("gateway_start", async () => {

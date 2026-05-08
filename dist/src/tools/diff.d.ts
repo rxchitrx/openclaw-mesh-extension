@@ -1,10 +1,15 @@
 import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { TrackedFile } from "../file-watcher.js";
+import { type DiffPreview } from "../diff-engine.js";
 export type DiffServices = {
     transport: TransportService;
     syncState: SyncStateService;
     getLocalManifest: () => TrackedFile[];
+    getFileContent: (relativePath: string) => Promise<{
+        content: string;
+        isBinary: boolean;
+    } | null>;
 };
 export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
     label: string;
@@ -17,11 +22,31 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
                 type: string;
                 description: string;
             };
+            file: {
+                type: string;
+                description: string;
+            };
+            includePatch: {
+                type: string;
+                description: string;
+            };
+            contextLines: {
+                type: string;
+                description: string;
+            };
+            maxBytes: {
+                type: string;
+                description: string;
+            };
         };
         required: string[];
     };
     execute: (_toolCallId: string, toolParams: {
         peerName?: string;
+        file?: string;
+        includePatch?: boolean;
+        contextLines?: number;
+        maxBytes?: number;
     }, _signal: any, _onUpdate: any) => Promise<{
         content: {
             type: "text";
@@ -32,11 +57,13 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             error: string;
             peersWithManifests?: undefined;
             peerName?: undefined;
+            file?: undefined;
             localOnly?: undefined;
             remoteOnly?: undefined;
             modified?: undefined;
             conflicted?: undefined;
             inSyncCount?: undefined;
+            previews?: undefined;
         };
     } | {
         content: {
@@ -48,11 +75,31 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             peersWithManifests: string[];
             error?: undefined;
             peerName?: undefined;
+            file?: undefined;
             localOnly?: undefined;
             remoteOnly?: undefined;
             modified?: undefined;
             conflicted?: undefined;
             inSyncCount?: undefined;
+            previews?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            error: string;
+            peerName: string;
+            file: string;
+            peersWithManifests?: undefined;
+            localOnly?: undefined;
+            remoteOnly?: undefined;
+            modified?: undefined;
+            conflicted?: undefined;
+            inSyncCount?: undefined;
+            previews?: undefined;
         };
     } | {
         content: {
@@ -67,8 +114,10 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
             modified: string[];
             conflicted: string[];
             inSyncCount: number;
+            previews: DiffPreview[];
             error?: undefined;
             peersWithManifests?: undefined;
+            file?: undefined;
         };
     }>;
 };

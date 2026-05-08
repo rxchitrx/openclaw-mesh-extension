@@ -41,6 +41,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       const pendingChanges = syncState.getPendingChanges();
       const eventStats = services.eventStore?.getStats();
       const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
+      const inFlight = transport.getInFlightSends();
       const now = new Date().toISOString();
 
       let message = `MESH STATUS\n`;
@@ -77,6 +78,20 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
             message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
           }
           message += manifest ? ` | manifest: ${manifest.length} files` : " | manifest: none";
+          const applied = transport.getRemoteAppliedFiles(name);
+          const rejected = transport.getRemoteRejectedFiles(name);
+          const peerInFlight = transport.getInFlightSends(name);
+          if (peerInFlight.length > 0) {
+            message += ` | in-flight: ${peerInFlight.length}`;
+          }
+          if (applied.length > 0) {
+            const last = applied[applied.length - 1];
+            message += ` | last applied: ${last.path}${last.hash ? `@${last.hash.slice(0, 8)}` : ""}`;
+          }
+          if (rejected.length > 0) {
+            const last = rejected[rejected.length - 1];
+            message += ` | last rejected: ${last.path} (${last.reason})`;
+          }
           message += `\n`;
         }
       }
@@ -109,9 +124,13 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       message += `FILE SYNC\n`;
       message += `  Watched: ${watchedFiles.length}\n`;
       message += `  Pending changes: ${pendingChanges.length}\n`;
+      message += `  In-flight sends: ${inFlight.length}\n`;
+      if (pendingChanges.length > 0) {
+        message += `  Pending files: ${pendingChanges.map((change) => change.relativePath).join(", ")}\n`;
+      }
 
       const health = connections.length > 0 ? "HEALTHY" : (peers.length > 0 ? "PARTIAL" : "STANDALONE");
-      message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
+      message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 && inFlight.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING / ${inFlight.length} IN-FLIGHT`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
 
       return {
         content: [{ type: "text" as const, text: message }],
@@ -129,6 +148,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
             lastAcknowledgedEventAt: eventStats?.lastAcknowledgedAt ?? null,
             watchedFiles: watchedFiles.length,
             pendingChanges: pendingChanges.length,
+            inFlightSends: inFlight.length,
             health,
             timestamp: now,
           },

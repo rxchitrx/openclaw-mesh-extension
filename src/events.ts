@@ -10,6 +10,7 @@ export type MeshEventKind =
   | "file_sent"
   | "file_received"
   | "file_written"
+  | "file_rejected"
   | "sync_applied"
   | "sync_failed"
   | "conflict"
@@ -65,6 +66,7 @@ const HIGH_PRIORITY = new Set<MeshEventKind>([
   "peer_pending_approval",
   "peer_disconnected",
   "sync_failed",
+  "file_rejected",
 ]);
 
 function createId(): string {
@@ -92,6 +94,8 @@ export function summarizeMeshEvents(events: MeshEventRecord[]): string {
     const prefix =
       event.kind === "file_written"
         ? `file write${peerLabel}`
+        : event.kind === "file_rejected"
+          ? `file rejection${peerLabel}`
         : event.kind === "file_received"
           ? `file receipt${peerLabel}`
           : event.kind === "file_sent"

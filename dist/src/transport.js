@@ -6,6 +6,9 @@ export function createTransport(config) {
     const approvedPeers = new Set();
     const remoteNodeInfo = new Map();
     const remoteAppliedFiles = new Map();
+    const remoteRejectedFiles = new Map();
+    const inFlightSends = new Map();
+    const previewRequests = new Map();
     let nodeInfoProvider = null;
     let fileContentProvider = null;
     let manifestProvider = null;
@@ -19,6 +22,16 @@ export function createTransport(config) {
         if (notificationHandler) {
             notificationHandler(notification);
         }
+    };
+    const sendFileRejected = (peerName, relativePath, reason, hash) => {
+        sendToPeer(peerName, {
+            type: "file_rejected",
+            path: relativePath,
+            hash,
+            reason,
+            from: nodeName,
+            rejectedAt: Date.now(),
+        });
     };
     const handleMessage = async (peerName, data, approved) => {
         try {
@@ -125,6 +138,7 @@ export function createTransport(config) {
                         const { path: filePath, content, isBinary, hash: remoteHash } = message;
                         if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
                             logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+                            sendFileRejected(peerName, filePath, "conflict", remoteHash);
                             notify({
                                 type: "file_conflict",
                                 message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
@@ -145,6 +159,7 @@ export function createTransport(config) {
                                 sendToPeer(peerName, {
                                     type: "file_applied",
                                     path: filePath,
+                                    hash: remoteHash,
                                     from: nodeName,
                                     appliedAt: Date.now(),
                                 });
@@ -158,6 +173,7 @@ export function createTransport(config) {
                             }
                             catch (err) {
                                 logger.error(`Failed to write received file ${filePath}: ${err}`);
+                                sendFileRejected(peerName, filePath, "write_failed", remoteHash);
                                 notify({
                                     type: "sync_failed",
                                     message: `Failed to write '${filePath}' from '${peerName}' to disk.`,
@@ -177,6 +193,66 @@ export function createTransport(config) {
                             filePath,
                             data: { file: filePath, isBinary },
                         });
+                    }
+                    break;
+                case "file_preview_request":
+                    if (!approved)
+                        return;
+                    {
+                        const requestId = message.requestId;
+                        if (!requestId || !fileContentProvider) {
+                            return;
+                        }
+                        const fileData = await fileContentProvider(message.path);
+                        if (fileData) {
+                            sendToPeer(peerName, {
+                                type: "file_preview_response",
+                                requestId,
+                                path: message.path,
+                                content: fileData.content,
+                                isBinary: fileData.isBinary,
+                                hash: syncState.getLocalHash(message.path),
+                                from: nodeName,
+                            });
+                        }
+                        else {
+                            sendToPeer(peerName, {
+                                type: "file_preview_response",
+                                requestId,
+                                path: message.path,
+                                error: "file_not_found",
+                                from: nodeName,
+                            });
+                        }
+                    }
+                    break;
+                case "file_preview_response":
+                    if (!approved)
+                        return;
+                    {
+                        const request = previewRequests.get(message.requestId);
+                        if (!request)
+                            return;
+                        clearTimeout(request.timer);
+                        previewRequests.delete(message.requestId);
+                        if (message.error) {
+                            notify({
+                                type: "file_preview",
+                                message: `Could not preview '${message.path}' from '${peerName}': ${message.error}.`,
+                                peerName,
+                                filePath: message.path,
+                                data: { error: message.error, file: message.path },
+                            });
+                            request.resolve(null);
+                        }
+                        else {
+                            request.resolve({
+                                path: message.path,
+                                content: message.content,
+                                isBinary: !!message.isBinary,
+                                hash: message.hash,
+                            });
+                        }
                     }
                     break;
                 case "file_content_request":
@@ -223,6 +299,7 @@ export function createTransport(config) {
                     {
                         const record = {
                             path: message.path,
+                            hash: message.hash,
                             appliedAt: typeof message.appliedAt === "number" ? message.appliedAt : Date.now(),
                             from: message.from || peerName,
                         };
@@ -230,9 +307,48 @@ export function createTransport(config) {
                         const next = existing.filter((item) => item.path !== record.path);
                         next.push(record);
                         remoteAppliedFiles.set(peerName, next.slice(-500));
+                        const inFlightKey = `${peerName}:${record.path}`;
+                        const inFlight = inFlightSends.get(inFlightKey);
+                        if (inFlight && (!record.hash || !inFlight.hash || record.hash === inFlight.hash)) {
+                            inFlightSends.delete(inFlightKey);
+                            const syncedHash = record.hash || inFlight.hash;
+                            const stillInFlightForPath = [...inFlightSends.values()].some((item) => item.path === record.path && item.hash === syncedHash);
+                            const rejectedForHash = [...remoteRejectedFiles.values()]
+                                .flat()
+                                .some((item) => item.path === record.path && (!item.hash || item.hash === syncedHash));
+                            if (syncedHash && syncedHash === syncState.getLocalHash(record.path) && !stillInFlightForPath && !rejectedForHash) {
+                                syncState.recordSyncedHash(record.path, syncedHash);
+                                syncState.clearPendingChanges([record.path]);
+                            }
+                        }
                         notify({
                             type: "sync_applied",
-                            message: `Peer '${peerName}' applied '${record.path}' to disk.`,
+                            message: `Peer '${peerName}' applied '${record.path}' to disk${record.hash ? ` (${record.hash.slice(0, 8)})` : ""}.`,
+                            peerName,
+                            filePath: record.path,
+                            data: record,
+                        });
+                    }
+                    break;
+                case "file_rejected":
+                    if (!approved)
+                        return;
+                    {
+                        const record = {
+                            path: message.path,
+                            hash: message.hash,
+                            rejectedAt: typeof message.rejectedAt === "number" ? message.rejectedAt : Date.now(),
+                            from: message.from || peerName,
+                            reason: message.reason || "unknown",
+                        };
+                        const existing = remoteRejectedFiles.get(peerName) || [];
+                        const next = existing.filter((item) => item.path !== record.path);
+                        next.push(record);
+                        remoteRejectedFiles.set(peerName, next.slice(-500));
+                        inFlightSends.delete(`${peerName}:${record.path}`);
+                        notify({
+                            type: "file_rejected",
+                            message: `Peer '${peerName}' rejected '${record.path}' (${record.reason}).`,
                             peerName,
                             filePath: record.path,
                             data: record,
@@ -423,6 +539,11 @@ export function createTransport(config) {
                 clearInterval(keepaliveTimer);
                 keepaliveTimer = null;
             }
+            for (const [, request] of previewRequests) {
+                clearTimeout(request.timer);
+                request.resolve(null);
+            }
+            previewRequests.clear();
             for (const [, conn] of connections) {
                 conn.socket.close();
             }
@@ -571,6 +692,12 @@ export function createTransport(config) {
                 hash: localHash,
                 from: nodeName,
             });
+            inFlightSends.set(`${peerName}:${relativePath}`, {
+                peerName,
+                path: relativePath,
+                hash: localHash || undefined,
+                sentAt: Date.now(),
+            });
             notify({
                 type: "file_sent",
                 message: `Sent '${relativePath}' to '${peerName}'.`,
@@ -584,6 +711,33 @@ export function createTransport(config) {
                 type: "file_content_request",
                 path: relativePath,
                 from: nodeName,
+            });
+        },
+        requestFilePreview(peerName, relativePath, timeoutMs = 5000) {
+            const conn = connections.get(peerName);
+            if (!conn || !conn.approved || conn.socket.readyState !== 1) {
+                return Promise.resolve(null);
+            }
+            const requestId = `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => {
+                    previewRequests.delete(requestId);
+                    notify({
+                        type: "file_preview",
+                        message: `Timed out previewing '${relativePath}' from '${peerName}'.`,
+                        peerName,
+                        filePath: relativePath,
+                        data: { file: relativePath, timeoutMs },
+                    });
+                    resolve(null);
+                }, timeoutMs);
+                previewRequests.set(requestId, { resolve, timer });
+                sendToPeer(peerName, {
+                    type: "file_preview_request",
+                    requestId,
+                    path: relativePath,
+                    from: nodeName,
+                });
             });
         },
         sendLocalManifest(peerName, manifest) {
@@ -622,6 +776,13 @@ export function createTransport(config) {
         },
         getRemoteAppliedFiles(peerName) {
             return [...(remoteAppliedFiles.get(peerName) || [])];
+        },
+        getRemoteRejectedFiles(peerName) {
+            return [...(remoteRejectedFiles.get(peerName) || [])];
+        },
+        getInFlightSends(peerName) {
+            const records = [...inFlightSends.values()];
+            return peerName ? records.filter((record) => record.peerName === peerName) : records;
         },
         setNodeInfoProvider(provider) {
             nodeInfoProvider = provider;

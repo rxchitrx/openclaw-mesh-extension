@@ -59,6 +59,8 @@ function mapTransportEventKind(type: TransportNotification["type"]): MeshEventKi
       return "file_received";
     case "file_written":
       return "file_written";
+    case "file_rejected":
+      return "file_rejected";
     case "file_conflict":
     case "conflict":
       return "conflict";
@@ -287,7 +289,7 @@ const meshPlugin = {
       { name: "mesh_status" },
     );
     api.registerTool(
-      (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest, nodeName }, ctx),
+      (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx),
       { name: "mesh_broadcast" },
     );
     api.registerTool(
@@ -300,7 +302,7 @@ const meshPlugin = {
     api.registerTool((ctx: any) => createMeshConnectionsTool({ transport, eventStore }, ctx), {
       name: "mesh_connections",
     });
-    api.registerTool((ctx: any) => createMeshDiffTool({ transport, syncState, getLocalManifest }, ctx), { name: "mesh_diff" });
+    api.registerTool((ctx: any) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx), { name: "mesh_diff" });
     api.registerTool((ctx: any) => createMeshEventsTool(eventStore, ctx), { name: "mesh_events" });
     api.registerTool((ctx: any) => createMeshAckTool(eventStore, ctx), { name: "mesh_ack" });
 

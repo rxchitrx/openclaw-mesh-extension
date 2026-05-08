@@ -14,9 +14,11 @@ Turns multiple OpenClaw instances into a peer-to-peer file sharing system. Two p
 - WebSocket P2P connections with session-based notifications
 - Hash-based version tracking with conflict detection
 - All file types supported (text + binary: images, PDFs, videos, etc.)
-- Manifest-based diff, push, and pull
+- GitHub-style unified text diffs with binary summaries
+- Manifest-based diff, push, pull, and remote preview
 - Node info and manifest exchange on connect/reconnect
 - File-applied confirmations so the sender knows the receiver wrote a file to disk
+- File-rejected notifications so failed/conflicted pushes do not look synced
 - File deletion detection with peer notification
 - Works completely offline on LAN
 
@@ -81,7 +83,7 @@ You: "Pull all from friend-laptop"
 | `mesh_approve` | Approve a pending peer connection | "approve friend-laptop" |
 | `mesh_reject` | Reject a pending peer connection | "reject stranger-pc" |
 | `mesh_connections` | Inspect active/pending connections, remote tracking info, apply confirmations, and last peer events | "show mesh connections" |
-| `mesh_diff` | Compare local vs remote manifest, including local-only, remote-only, modified, and conflicted files | "show differences with friend-laptop" |
+| `mesh_diff` | Compare local vs remote files with GitHub-style unified text patches and binary summaries | "show differences with friend-laptop" |
 | `mesh_broadcast` | Push local changes to all approved peers | "broadcast" / "broadcast index.ts" |
 | `mesh_sync` | Manifest-based push/pull with a specific peer | "pull README.md from friend-laptop" / "push-all to friend-laptop" |
 | `mesh_events` | List unread and recent mesh events | "show mesh events" |
@@ -139,6 +141,7 @@ Receiver checks for conflict
 Receiver writes file if safe
 Receiver sends file_applied after disk write succeeds
 Sender records remote apply confirmation
+Sender clears pending state only after matching apply confirmations arrive
 ```
 
 ### Conflict Handling
@@ -158,7 +161,7 @@ When a received file is written to disk, the file watcher would normally detect 
 
 Mesh events are managed by an in-memory event store:
 
-1. **Created**: peer requests, approvals, disconnects, manifests, file writes, sync failures, and conflicts create events.
+1. **Created**: peer requests, approvals, disconnects, manifests, file writes, apply confirmations, rejections, sync failures, and conflicts create events.
 2. **Delivered**: queued events are injected into the current active OpenClaw session.
 3. **Repeated**: unacknowledged events can re-surface with throttling.
 4. **Acknowledged**: `mesh_ack` marks events acknowledged so they stop repeating.
@@ -213,9 +216,12 @@ Messages sent between peers over WebSocket:
 | `node_info` | both | Current tracking directory, file count, and file list |
 | `manifest` | both | File list with hashes and metadata |
 | `manifest_request` | either | Ask peer for their manifest |
+| `file_preview_request` | diff viewer to peer | Request file content for preview only; does not write locally |
+| `file_preview_response` | peer to diff viewer | Return file preview content, binary flag, and hash |
 | `file_content` | either | Full file content for push/pull, including hash for conflict detection |
 | `file_content_request` | either | Request a specific file from a peer |
 | `file_applied` | receiver to sender | Confirmation that a received file was written to disk |
+| `file_rejected` | receiver to sender | Notification that a pushed file was blocked by conflict or write failure |
 | `file_deleted` | deleter to peers | Notification that a file was deleted |
 
 ## Demo Setup
@@ -256,6 +262,7 @@ You: "Approve laptop-b"
 ```text
 You: "Show me differences with laptop-b"
     -> Shows local-only, remote-only, modified, conflicted, and in-sync counts
+    -> Includes unified text patches for safe-size text files
 
 You: "Pull all from laptop-b"
     -> Requests files while skipping conflicts
@@ -263,6 +270,7 @@ You: "Pull all from laptop-b"
 You: "Broadcast"
     -> Pushes pending local changes
     -> Remote sends file_applied confirmations after disk writes
+    -> Local pending state clears after matching confirmations
 ```
 
 ## Technical Details
@@ -295,6 +303,15 @@ Each tracked file stores:
 
 A file is considered in conflict when it is locally modified and an incoming push has a different hash.
 
+### Diff Preview
+
+`mesh_diff` generates previews on demand:
+
+- Text files use unified hunks with configurable context lines.
+- Binary files show hash and size summaries.
+- Large text files are summarized instead of dumped into chat.
+- Remote file content is fetched through `file_preview_request`, which never writes to disk.
+
 ### Port Usage
 
 | Port | Service |
@@ -321,6 +338,7 @@ openclaw-mesh-extension/
 ├── dist/
 └── src/
     ├── discovery.ts
+    ├── diff-engine.ts
     ├── transport.ts
     ├── sync-state.ts
     ├── events.ts

@@ -27,11 +27,31 @@ export type NodeInfo = {
 };
 export type RemoteApplyRecord = {
     path: string;
+    hash?: string;
     appliedAt: number;
     from: string;
 };
+export type RemoteRejectRecord = {
+    path: string;
+    hash?: string;
+    rejectedAt: number;
+    from: string;
+    reason: string;
+};
+export type InFlightSendRecord = {
+    path: string;
+    hash?: string;
+    sentAt: number;
+    peerName: string;
+};
+export type FilePreview = {
+    path: string;
+    content: string;
+    isBinary: boolean;
+    hash?: string | null;
+};
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview";
     message: string;
     peerName?: string;
     filePath?: string;
@@ -51,12 +71,15 @@ export type TransportService = {
     requestManifest: (peerName: string) => void;
     sendFileContent: (peerName: string, relativePath: string, content: string, isBinary: boolean) => void;
     requestFileContent: (peerName: string, relativePath: string) => void;
+    requestFilePreview: (peerName: string, relativePath: string, timeoutMs?: number) => Promise<FilePreview | null>;
     sendLocalManifest: (peerName: string, manifest: TrackedFile[]) => void;
     notifyFileDeleted: (relativePath: string) => void;
     setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
     maintainConnections: () => Promise<void>;
     getNodeInfo: (peerName: string) => NodeInfo | null;
     getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
+    getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
+    getInFlightSends: (peerName?: string) => InFlightSendRecord[];
     setNodeInfoProvider: (provider: () => NodeInfo) => void;
     setFileContentProvider: (provider: (relativePath: string) => Promise<{
         content: string;

@@ -48,6 +48,7 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                 lastAcknowledgedEventAt: number;
                 watchedFiles: number;
                 pendingChanges: number;
+                inFlightSends: number;
                 health: string;
                 timestamp: string;
             };

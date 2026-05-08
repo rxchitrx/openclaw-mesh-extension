@@ -7,7 +7,6 @@ export type BroadcastServices = {
   transport: TransportService;
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
   getLocalManifest: () => TrackedFile[];
-  nodeName: string;
 };
 
 export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) {
@@ -26,7 +25,7 @@ export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) 
       required: [] as string[],
     },
     execute: async (_toolCallId: string, toolParams: { file?: string }, _signal: any, _onUpdate: any) => {
-      const { syncState, transport, getFileContent, nodeName } = services;
+      const { syncState, transport, getFileContent } = services;
       const file = toolParams?.file;
       const connections = transport.getConnections();
 
@@ -63,27 +62,22 @@ export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) 
       for (const change of toBroadcast) {
         const fileData = await getFileContent(change.relativePath);
         if (fileData) {
-          transport.broadcast({
-            type: "file_content",
-            path: change.relativePath,
-            content: fileData.content,
-            isBinary: fileData.isBinary,
-            hash: change.hash,
-            from: nodeName,
-          });
+          for (const peerName of connections) {
+            transport.sendFileContent(peerName, change.relativePath, fileData.content, fileData.isBinary);
+            sentCount++;
+          }
           sentFiles.push(change.relativePath);
-          sentCount++;
         }
       }
-
-      syncState.clearPendingChanges(sentFiles);
 
       const fileList = [...new Set(sentFiles)];
       const now = new Date().toISOString();
       let message = `MESH BROADCAST\n`;
       message += `Timestamp: ${now}\n`;
       message += `Peers: ${connections.length}\n`;
-      message += `Files sent: ${fileList.length}\n\n`;
+      message += `Files queued: ${fileList.length}\n`;
+      message += `Transfers sent: ${sentCount}\n`;
+      message += `Pending changes clear after peers confirm file_applied.\n\n`;
 
       for (const f of fileList) {
         const change = toBroadcast.find((c) => c.relativePath === f);
@@ -94,7 +88,7 @@ export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) 
         content: [{ type: "text" as const, text: message }],
         details: {
           ok: true,
-          filesSent: sentCount,
+          transfersSent: sentCount,
           files: fileList,
           peerCount: connections.length,
           timestamp: now,

@@ -5,6 +5,7 @@ const HIGH_PRIORITY = new Set([
     "peer_pending_approval",
     "peer_disconnected",
     "sync_failed",
+    "file_rejected",
 ]);
 function createId() {
     return `mesh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -26,17 +27,19 @@ export function summarizeMeshEvents(events) {
         const peerLabel = event.peerName ? ` from ${event.peerName}` : "";
         const prefix = event.kind === "file_written"
             ? `file write${peerLabel}`
-            : event.kind === "file_received"
-                ? `file receipt${peerLabel}`
-                : event.kind === "file_sent"
-                    ? `file send${peerLabel}`
-                    : event.kind === "manifest_received"
-                        ? `manifest update${peerLabel}`
-                        : event.kind === "sync_applied"
-                            ? `remote apply confirmation${peerLabel}`
-                            : event.kind === "peer_connected"
-                                ? `connection${peerLabel}`
-                                : event.message;
+            : event.kind === "file_rejected"
+                ? `file rejection${peerLabel}`
+                : event.kind === "file_received"
+                    ? `file receipt${peerLabel}`
+                    : event.kind === "file_sent"
+                        ? `file send${peerLabel}`
+                        : event.kind === "manifest_received"
+                            ? `manifest update${peerLabel}`
+                            : event.kind === "sync_applied"
+                                ? `remote apply confirmation${peerLabel}`
+                                : event.kind === "peer_connected"
+                                    ? `connection${peerLabel}`
+                                    : event.message;
         if (existing) {
             existing.count += 1;
         }
