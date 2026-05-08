@@ -1,5 +1,7 @@
 # OpenClaw Mesh Extension
 
+Demo video: [Merge Mind walkthrough](https://drive.google.com/drive/folders/1h6EmILlajb08m-4zhbxEZOVtthdrEanX?usp=sharing)
+
 A local offline GitHub for OpenClaw nodes on the same network. No cloud server, no internet, no account required.
 
 ## What This Does
