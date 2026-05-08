@@ -383,9 +383,19 @@ openclaw-mesh-extension/
 
 Mesh does not replace GitHub. It complements it during active collaboration, hackathons, pair programming, and offline work, then GitHub can remain the long-term source of truth.
 
+## Presentation
+
+The hackathon deck is included in the repo root:
+
+- [RVCE_MergeMind.pptx](/Users/rachit/.openclaw/extensions/mesh/RVCE_MergeMind.pptx)
+
 ## License
 
 MIT
+
+## AI Disclosure
+
+This project was developed with assistance from OpenAI's Codex during implementation, debugging, documentation, and repo hygiene work. Core technical decisions, testing, and approval to publish were made by the repository owner. The final extension code and presentation content were reviewed and committed intentionally for this hackathon submission.
 
 ## Credits
 
