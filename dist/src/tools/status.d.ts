@@ -2,6 +2,7 @@ import type { DiscoveryService } from "../discovery.js";
 import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { FileWatcherService } from "../file-watcher.js";
+import type { MeshEventStore } from "../events.js";
 type TrackState = {
     fileWatcher: FileWatcherService | null;
     currentTrackDir: string | null;
@@ -13,6 +14,7 @@ type MeshServices = {
     transport: TransportService;
     syncState: SyncStateService;
     getTrackState: () => TrackState;
+    eventStore?: MeshEventStore;
 };
 export declare function createMeshStatusTool(services: MeshServices, _ctx: any): {
     label: string;
@@ -40,6 +42,10 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                 peerCount: number;
                 connectionCount: number;
                 pendingApprovalCount: number;
+                unreadEventCount: number;
+                undeliveredEventCount: number;
+                lastDeliveredEventAt: number;
+                lastAcknowledgedEventAt: number;
                 watchedFiles: number;
                 pendingChanges: number;
                 health: string;

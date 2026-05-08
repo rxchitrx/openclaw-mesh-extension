@@ -17,6 +17,8 @@ export function createMeshStatusTool(services, _ctx) {
             const pending = transport.getPendingConnections();
             const watchedFiles = fileWatcher?.getWatchedFiles() ?? [];
             const pendingChanges = syncState.getPendingChanges();
+            const eventStats = services.eventStore?.getStats();
+            const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
             const now = new Date().toISOString();
             let message = `MESH STATUS\n`;
             message += `Timestamp: ${now}\n\n`;
@@ -60,6 +62,22 @@ export function createMeshStatusTool(services, _ctx) {
                 }
             }
             message += `\n`;
+            message += `EVENTS\n`;
+            message += `  Unread: ${eventStats?.unreadCount ?? 0}\n`;
+            message += `  Undelivered: ${eventStats?.undeliveredCount ?? 0}\n`;
+            if (eventStats?.lastDeliveredAt) {
+                message += `  Last delivered: ${new Date(eventStats.lastDeliveredAt).toISOString()}\n`;
+            }
+            if (eventStats?.lastAcknowledgedAt) {
+                message += `  Last acknowledged: ${new Date(eventStats.lastAcknowledgedAt).toISOString()}\n`;
+            }
+            if (recentEvents.length > 0) {
+                message += `  Recent unread:\n`;
+                for (const event of recentEvents) {
+                    message += `    ${event.kind}${event.peerName ? ` from ${event.peerName}` : ""}: ${event.message}\n`;
+                }
+            }
+            message += `\n`;
             message += `FILE SYNC\n`;
             message += `  Watched: ${watchedFiles.length}\n`;
             message += `  Pending changes: ${pendingChanges.length}\n`;
@@ -75,6 +93,10 @@ export function createMeshStatusTool(services, _ctx) {
                         peerCount: peers.length,
                         connectionCount: connections.length,
                         pendingApprovalCount: pending.length,
+                        unreadEventCount: eventStats?.unreadCount ?? 0,
+                        undeliveredEventCount: eventStats?.undeliveredCount ?? 0,
+                        lastDeliveredEventAt: eventStats?.lastDeliveredAt ?? null,
+                        lastAcknowledgedEventAt: eventStats?.lastAcknowledgedAt ?? null,
                         watchedFiles: watchedFiles.length,
                         pendingChanges: pendingChanges.length,
                         health,

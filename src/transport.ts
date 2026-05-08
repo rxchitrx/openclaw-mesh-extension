@@ -30,8 +30,30 @@ export type NodeInfo = {
   trackingFiles: string[];
 };
 
+export type RemoteApplyRecord = {
+  path: string;
+  appliedAt: number;
+  from: string;
+};
+
 export type TransportNotification = {
-  type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "file_conflict" | "file_received" | "manifest_received" | "node_info_received";
+  type:
+    | "peer_pending"
+    | "peer_approved"
+    | "peer_denied"
+    | "peer_connected"
+    | "peer_disconnected"
+    | "file_deleted"
+    | "file_conflict"
+    | "conflict"
+    | "manifest_received"
+    | "node_info_received"
+    | "sync_requested"
+    | "sync_applied"
+    | "sync_failed"
+    | "file_sent"
+    | "file_received"
+    | "file_written";
   message: string;
   peerName?: string;
   filePath?: string;
@@ -57,6 +79,7 @@ export type TransportService = {
   setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
   maintainConnections: () => Promise<void>;
   getNodeInfo: (peerName: string) => NodeInfo | null;
+  getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
   setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
   setManifestProvider: (provider: () => TrackedFile[]) => void;
@@ -72,6 +95,7 @@ export function createTransport(config: TransportConfig): TransportService {
   const remoteManifests = new Map<string, TrackedFile[]>();
   const approvedPeers = new Set<string>();
   const remoteNodeInfo = new Map<string, NodeInfo>();
+  const remoteAppliedFiles = new Map<string, RemoteApplyRecord[]>();
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
@@ -212,27 +236,41 @@ export function createTransport(config: TransportConfig): TransportService {
                 }
                 await fileWriter(filePath, content, isBinary);
                 syncState.recordRemoteChange(filePath, remoteHash || "", peerName, isBinary);
-                logger.info(`Received and wrote file: ${filePath} from ${peerName}`);
+                logger.info(`Wrote received file to disk: ${filePath} from ${peerName}`);
+                sendToPeer(peerName, {
+                  type: "file_applied",
+                  path: filePath,
+                  from: nodeName,
+                  appliedAt: Date.now(),
+                });
                 notify({
-                  type: "file_received",
-                  message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}). Written to disk.`,
+                  type: "file_written",
+                  message: `Wrote '${filePath}' from '${peerName}' to the tracked directory.`,
                   peerName,
                   filePath,
-                  data: { file: filePath },
+                  data: { file: filePath, isBinary, direction: "received" },
                 });
               } catch (err) {
                 logger.error(`Failed to write received file ${filePath}: ${err}`);
                 notify({
-                  type: "file_received",
-                  message: `Failed to write '${filePath}' from '${peerName}': ${err}`,
+                  type: "sync_failed",
+                  message: `Failed to write '${filePath}' from '${peerName}' to disk.`,
                   peerName,
                   filePath,
-                  data: { file: filePath, error: String(err) },
+                  data: { file: filePath, isBinary, error: String(err) },
                 });
               }
             } else {
               logger.info(`Received file (no writer): ${filePath} from ${peerName}`);
             }
+
+            notify({
+              type: "file_received",
+              message: `Received '${filePath}' from '${peerName}' (${content.length} chars, ${isBinary ? "binary" : "text"}).`,
+              peerName,
+              filePath,
+              data: { file: filePath, isBinary },
+            });
           }
           break;
 
@@ -252,10 +290,46 @@ export function createTransport(config: TransportConfig): TransportService {
                   from: nodeName,
                 });
                 logger.info(`Sent requested file ${message.path} to ${peerName}`);
+                notify({
+                  type: "file_sent",
+                  message: `Sent '${message.path}' to '${peerName}'.`,
+                  peerName,
+                  filePath: message.path,
+                  data: { file: message.path, isBinary: fileData.isBinary, direction: "response" },
+                });
               } else {
                 logger.warn(`Requested file not found: ${message.path}`);
+                notify({
+                  type: "sync_failed",
+                  message: `Peer '${peerName}' requested '${message.path}', but it was not found locally.`,
+                  peerName,
+                  filePath: message.path,
+                  data: { file: message.path },
+                });
               }
             }
+          }
+          break;
+
+        case "file_applied":
+          if (!approved) return;
+          {
+            const record: RemoteApplyRecord = {
+              path: message.path,
+              appliedAt: typeof message.appliedAt === "number" ? message.appliedAt : Date.now(),
+              from: message.from || peerName,
+            };
+            const existing = remoteAppliedFiles.get(peerName) || [];
+            const next = existing.filter((item) => item.path !== record.path);
+            next.push(record);
+            remoteAppliedFiles.set(peerName, next.slice(-500));
+            notify({
+              type: "sync_applied",
+              message: `Peer '${peerName}' applied '${record.path}' to disk.`,
+              peerName,
+              filePath: record.path,
+              data: record,
+            });
           }
           break;
 
@@ -628,6 +702,13 @@ export function createTransport(config: TransportConfig): TransportService {
         hash: localHash,
         from: nodeName,
       });
+      notify({
+        type: "file_sent",
+        message: `Sent '${relativePath}' to '${peerName}'.`,
+        peerName,
+        filePath: relativePath,
+        data: { file: relativePath, isBinary, direction: "push" },
+      });
     },
 
     requestFileContent(peerName: string, relativePath: string) {
@@ -675,6 +756,10 @@ export function createTransport(config: TransportConfig): TransportService {
 
     getNodeInfo(peerName: string): NodeInfo | null {
       return remoteNodeInfo.get(peerName) || null;
+    },
+
+    getRemoteAppliedFiles(peerName: string): RemoteApplyRecord[] {
+      return [...(remoteAppliedFiles.get(peerName) || [])];
     },
 
     setNodeInfoProvider(provider: () => NodeInfo) {

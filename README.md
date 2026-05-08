@@ -1,19 +1,22 @@
 # OpenClaw Mesh Extension
 
-A local offline GitHub — P2P project file sharing between OpenClaw nodes on the same network. No cloud server, no internet, no account required.
+A local offline GitHub for OpenClaw nodes on the same network. No cloud server, no internet, no account required.
 
 ## What This Does
 
-Turns multiple OpenClaw instances into a peer-to-peer file sharing system. Two people on the same WiFi can share project files directly — laptop to laptop — with conflict detection, peer approval, and fine-grained sync control.
+Turns multiple OpenClaw instances into a peer-to-peer file sharing system. Two people on the same WiFi can share project files directly with peer approval, manifest exchange, immediate event notifications, hash-based conflict detection, and fine-grained sync control.
 
 **Key features:**
 
 - Automatic peer discovery via subnet scanning + mDNS
+- Transport-first peer presence tracking when a peer connects inbound
 - Peer approval flow (no one joins without your say-so)
-- WebSocket P2P connections with real-time notifications
+- WebSocket P2P connections with session-based notifications
 - Hash-based version tracking with conflict detection
-- All file types supported (text + binary — images, PDFs, videos, etc.)
+- All file types supported (text + binary: images, PDFs, videos, etc.)
 - Manifest-based diff, push, and pull
+- Node info and manifest exchange on connect/reconnect
+- File-applied confirmations so the sender knows the receiver wrote a file to disk
 - File deletion detection with peer notification
 - Works completely offline on LAN
 
@@ -28,20 +31,11 @@ Turns multiple OpenClaw instances into a peer-to-peer file sharing system. Two p
 ### From Source
 
 ```bash
-# Clone the repo
 git clone https://github.com/rxchitrx/openclaw-mesh-extension.git
 cd openclaw-mesh-extension
-
-# Install dependencies
 npm install
-
-# Build TypeScript
-npx tsc
-
-# Install as an OpenClaw plugin
+npm run build
 openclaw plugins install $(pwd)
-
-# Restart the gateway
 openclaw gateway restart
 ```
 
@@ -58,8 +52,9 @@ openclaw gateway restart
 
 ```bash
 openclaw plugins inspect mesh --runtime
-# Should show: mesh_discover, mesh_status, mesh_broadcast, mesh_sync, mesh_track, mesh_approve, mesh_diff, mesh_reject, mesh_connections, mesh_diff, mesh_events, mesh_ack
 ```
+
+Expected tools include `mesh_discover`, `mesh_status`, `mesh_broadcast`, `mesh_sync`, `mesh_track`, `mesh_approve`, `mesh_reject`, `mesh_connections`, `mesh_diff`, `mesh_events`, and `mesh_ack`.
 
 ## Usage
 
@@ -67,7 +62,7 @@ You interact with the mesh by talking to the OpenClaw AI naturally. No slash com
 
 ### Quick Start
 
-```
+```text
 You: "Track my project at ~/projects/my-app"
 You: "Who's on the mesh?"
 You: "Approve friend-laptop"
@@ -76,21 +71,21 @@ You: "Broadcast"
 You: "Pull all from friend-laptop"
 ```
 
-### 11 Tools
+### Mesh Tools
 
 | Tool | What It Does | Example |
 |------|-------------|---------|
 | `mesh_track` | Set, change, or stop tracking a directory | "track ~/my-project" / "stop tracking" |
 | `mesh_discover` | List all nodes visible on the mesh | "who's on the network?" |
-| `mesh_status` | Full mesh state: peers, connections, pending approvals, files | "what's the mesh status?" |
+| `mesh_status` | Full mesh state: peers, connections, pending approvals, events, files, and remote node info | "what's the mesh status?" |
 | `mesh_approve` | Approve a pending peer connection | "approve friend-laptop" |
-| `mesh_reject` | Deny a pending peer connection | "reject stranger-pc" |
-| `mesh_connections` | Inspect peer connections and recent events | "show connections" |
-| `mesh_diff` | Compare local vs remote manifest (local-only, remote-only, modified, conflicted) | "show differences with friend-laptop" |
+| `mesh_reject` | Reject a pending peer connection | "reject stranger-pc" |
+| `mesh_connections` | Inspect active/pending connections, remote tracking info, apply confirmations, and last peer events | "show mesh connections" |
+| `mesh_diff` | Compare local vs remote manifest, including local-only, remote-only, modified, and conflicted files | "show differences with friend-laptop" |
 | `mesh_broadcast` | Push local changes to all approved peers | "broadcast" / "broadcast index.ts" |
 | `mesh_sync` | Manifest-based push/pull with a specific peer | "pull README.md from friend-laptop" / "push-all to friend-laptop" |
-| `mesh_events` | List recent mesh events (unread, acknowledged) | "show mesh events" |
-| `mesh_ack` | Acknowledge mesh notifications | "ack all mesh events" |
+| `mesh_events` | List unread and recent mesh events | "show mesh events" |
+| `mesh_ack` | Acknowledge one event or all unread mesh events | "ack all mesh events" |
 
 ### Sync Actions
 
@@ -98,138 +93,84 @@ You: "Pull all from friend-laptop"
 |--------|-------------|
 | `manifest` | Exchange file lists with a peer |
 | `push <file>` | Send one file to a peer |
-| `pull <file>` | Request one file from a peer (blocked on conflict unless forced) |
-| `push-all` | Send all files a peer doesn't have or has differently |
-| `pull-all` | Request all files you don't have or have differently (skips conflicts) |
+| `pull <file>` | Request one file from a peer; blocked on conflict unless forced |
+| `push-all` | Send all files a peer does not have or has differently |
+| `pull-all` | Request all files you do not have or have differently; skips conflicts |
 
 ## How It Works
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       OpenClaw Gateway                          │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │                     Mesh Extension                         │ │
-│  │                                                           │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │ │
-│  │  │  Discovery   │  │  Transport   │  │  Sync State  │    │ │
-│  │  │ (subnet scan │  │ (WebSocket)  │  │ (hash+ver)   │    │ │
-│  │  │  + mDNS)     │  │  approval +  │  │ change track │    │ │
-│  │  │              │  │  manifest +  │  │ + conflict   │    │ │
-│  │  │              │  │  push/pull   │  │  detection   │    │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘    │ │
-│  │         ▲                 ▲                 ▲             │ │
-│  │         │                 │                 │             │ │
-│  │  ┌──────┴──────┐   ┌─────┴─────┐    ┌──────┴──────┐     │ │
-│  │  │   File      │   │   Mesh    │    │  Event      │     │ │
-│  │  │  Watcher    │   │   Tools   │    │  Store      │     │ │
-│  │  │ all files + │   │ (11 tools)│    │ (notif +    │     │ │
-│  │  │ deletions + │   │           │    │  delivery)  │     │ │
-│  │  │  binary     │   │           │    │             │     │ │
-│  │  └─────────────┘   └───────────┘    └─────────────┘     │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│                           ▲                                     │
-│                     Tracked Directory                           │
-│                   (user-chosen at runtime)                      │
-└─────────────────────────────────────────────────────────────────┘
+```text
+OpenClaw Gateway
+  Mesh Extension
+    Discovery: subnet scan + mDNS advertise/browse
+    Transport: WebSocket approval, manifest exchange, push/pull
+    Sync State: hash/version tracking, pending changes, conflict detection
+    Event Store: queued notifications, delivery, acknowledgement
+    File Watcher: all files, deletions, binary support, feedback-loop suppression
+    Mesh Tools: status, discover, approve/reject, sync, diff, events, ack
 ```
 
 ### Peer Discovery
 
-On startup, the extension automatically scans the local subnet (all 254 IPs on /24) for other mesh nodes listening on port 18790. It also uses mDNS as a secondary discovery method. Discovered peers are auto-connected.
+On startup, the extension scans the local subnet for other mesh nodes listening on port `18790`. It also uses mDNS as a secondary discovery method. Discovered peers are auto-connected.
 
 ### Peer Connection Flow
 
-```
-Laptop A discovers Laptop B via subnet scan
-        │
-        ▼
+```text
+Laptop A discovers Laptop B via subnet scan or mDNS
 Laptop A connects via WebSocket
-        │
-        ▼
-Laptop B puts connection in PENDING state
-        │
-        ▼
-Laptop B's chat: "Peer 'laptop-b' wants to join. Approve or deny?"
-        │
-        ▼
-User says "approve laptop-b"
-        │
-        ▼
-Connection promoted to APPROVED
-        │
-        ▼
-Both sides auto-exchange:
-  - node_info (tracking dir, file count)
-  - manifest (file list with SHA-256 hashes)
+Laptop B stores the connection as pending
+Laptop B surfaces a pending approval event
+User approves Laptop A
+Both sides exchange node_info and manifests
+Both sides can now diff, push, pull, and broadcast files
 ```
 
 ### File Sync Flow
 
-```
-File changed in tracked directory
-        │
-        ▼
-File Watcher detects change (text or binary)
-        │
-        ▼
-SyncState records local change (hash + version)
-        │
-        ▼
-User says "broadcast"
-        │
-        ▼
-Transport sends file_content to all approved peers
-  - Full file content (text as UTF-8, binary as base64)
-  - Includes hash for conflict detection
-        │
-        ▼
-Peer receives file_content:
-  - If no conflict: write to disk, update sync state
-  - If conflict (local was also modified): reject, notify user
+```text
+File changes in tracked directory
+File watcher records the change in SyncState
+User broadcasts, pushes, or pulls
+Transport sends file_content with content hash
+Receiver checks for conflict
+Receiver writes file if safe
+Receiver sends file_applied after disk write succeeds
+Sender records remote apply confirmation
 ```
 
 ### Conflict Handling
 
 When both peers have modified the same file:
 
-1. **Incoming push detected as conflict** — the transport checks `isConflict(path, remoteHash)`. If the local file was modified since the last sync AND the remote hash differs, it's a conflict.
-2. **Local version is kept** — the incoming file is NOT written. A `file_conflict` notification tells the user.
-3. **User decides** — they can force-pull to override, or keep their version.
-4. **Pull blocks by default** — `pull` and `pull-all` refuse to overwrite locally-modified files. Use `force=true` to override.
-
-### File Deletion Flow
-
-```
-User deletes file from tracked directory
-        │
-        ▼
-File Watcher detects deletion
-        │
-        ▼
-Transport sends "file_deleted" to all peers
-        │
-        ▼
-Peers receive notification:
-"Peer 'laptop-a' deleted old-module.ts. Keep your copy or delete locally?"
-        │
-        ▼
-Peer decides — no automatic deletion
-```
+1. Incoming push is checked with `syncState.isConflict(path, remoteHash)`.
+2. If local changes would be overwritten, the incoming file is not written.
+3. A conflict event is queued for the user.
+4. `pull` and `pull-all` refuse to overwrite locally modified files unless a force path is used.
 
 ### Feedback Loop Prevention
 
-When a received file is written to disk, the file watcher would normally detect it as a local change. To prevent this, `ignoreNextChange` is called before writing — the watcher uses a 2-second time window to suppress and properly update its cache for received files instead of recording them as local changes.
+When a received file is written to disk, the file watcher would normally detect it as a local change. The extension calls `ignoreNextChange` before writing, so the watcher suppresses that next filesystem event and updates its cache instead of treating the remote write as a new local edit.
 
 ### Notifications
 
-Mesh events are managed by an Event Store with priority-based delivery:
+Mesh events are managed by an in-memory event store:
 
-1. **Created** — events are added when something happens (peer request, file received, conflict, etc.)
-2. **Delivered** — injected into the agent's conversation context with explicit instructions to notify the user
-3. **Re-surfaced** — unacknowledged high-priority events (peer pending, conflict) are re-injected every 60 seconds
-4. **Acknowledged** — via `mesh_ack` tool, stops surfacing
+1. **Created**: peer requests, approvals, disconnects, manifests, file writes, sync failures, and conflicts create events.
+2. **Delivered**: queued events are injected into the current active OpenClaw session.
+3. **Repeated**: unacknowledged events can re-surface with throttling.
+4. **Acknowledged**: `mesh_ack` marks events acknowledged so they stop repeating.
+
+If there is no active session available, events stay queued and remain visible through `mesh_status` and `mesh_events`.
+
+### Reconnection
+
+- Approved peers are remembered and auto-approved on reconnect.
+- Node info and manifests are re-exchanged on reconnection.
+- The file watcher re-scans the tracked directory after gateway restart.
+- The filesystem plus SyncState are the source of truth for pending changes.
 
 ## Configuration
 
@@ -259,7 +200,7 @@ Add to your `~/.openclaw/openclaw.json`:
 | `enabled` | boolean | `true` | Enable/disable the mesh |
 | `nodeName` | string | `node-<pid>` | Unique name for this node |
 | `port` | number | `18790` | Port for P2P WebSocket connections |
-| `trackDir` | string | — | Directory to auto-track on startup (optional — can also set at runtime via mesh_track) |
+| `trackDir` | string | none | Directory to auto-track on startup; can also be set at runtime with `mesh_track` |
 
 ## Protocol Messages
 
@@ -267,60 +208,61 @@ Messages sent between peers over WebSocket:
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `approval_request` | connector → listener | "I want to join the mesh" |
-| `approval_response` | listener → connector | approve or deny |
-| `node_info` | both | Node metadata (tracking dir, file count, file list) |
+| `approval_request` | connector to listener | Request to join the mesh |
+| `approval_response` | listener to connector | Approve or deny |
+| `node_info` | both | Current tracking directory, file count, and file list |
 | `manifest` | both | File list with hashes and metadata |
 | `manifest_request` | either | Ask peer for their manifest |
-| `file_content` | either | Full file content for push/pull (includes hash for conflict detection) |
+| `file_content` | either | Full file content for push/pull, including hash for conflict detection |
 | `file_content_request` | either | Request a specific file from a peer |
-| `file_deleted` | deleter → peers | Notification that a file was deleted |
+| `file_applied` | receiver to sender | Confirmation that a received file was written to disk |
+| `file_deleted` | deleter to peers | Notification that a file was deleted |
 
-## Demo Setup (2 Laptops)
+## Demo Setup
 
 ### On Both Laptops
 
 1. Install OpenClaw: `npm install -g openclaw`
-2. Install mesh extension (see Installation above)
-3. Make sure both are on the same WiFi network
+2. Install the mesh extension
+3. Make sure both laptops are on the same WiFi network
 
 ### Laptop A
 
-```
+```text
 You: "Track my project at ~/projects/my-app"
 You: "What's the mesh status?"
-    → Shows: tracking ~/projects/my-app, 0 peers, STANDALONE
+    -> Shows tracking path, local node, peers, events, and pending changes
 ```
 
 ### Laptop B
 
-```
+```text
 You: "Track my project at ~/projects/shared-app"
 You: "Who's on the mesh?"
-    → Discovers: laptop-a
-    → Auto-connects to laptop-a
+    -> Discovers laptop-a
+    -> Auto-connects to laptop-a
 ```
 
-### Laptop A (receives connection)
+### Laptop A Receives Connection
 
-```
+```text
 Chat notification: "Peer 'laptop-b' wants to join the mesh. Approve or deny?"
 You: "Approve laptop-b"
-    → Manifests and node info auto-exchanged
+    -> Node info and manifests auto-exchange
 ```
 
 ### Compare and Sync
 
-```
+```text
 You: "Show me differences with laptop-b"
-    → Shows: 3 local-only, 1 remote-only, 2 modified, 0 conflicted, 5 in sync
+    -> Shows local-only, remote-only, modified, conflicted, and in-sync counts
 
 You: "Pull all from laptop-b"
-    → Requests 3 files (skips any conflicts)
+    -> Requests files while skipping conflicts
 
 You: "Broadcast"
-    → Pushes all pending changes to laptop-b
-    → Clears pending change list
+    -> Pushes pending local changes
+    -> Remote sends file_applied confirmations after disk writes
 ```
 
 ## Technical Details
@@ -329,105 +271,99 @@ You: "Broadcast"
 
 | Package | Purpose |
 |---------|---------|
-| `@homebridge/ciao` | mDNS advertise (uses avahi D-Bus on Linux) |
+| `@homebridge/ciao` | mDNS advertise, including Avahi D-Bus support on Linux |
 | `bonjour-service` | mDNS browse for peer discovery |
 | `ws` | WebSocket server and client for P2P connections |
 
 ### File Types
 
-**All files are tracked**, not just text. The watcher handles:
+All files are tracked, not just text:
 
-- **Text files**: `.ts`, `.js`, `.py`, `.md`, `.json`, `.yaml`, `.html`, `.css`, `.sh`, and 30+ more extensions
-- **Binary files**: `.png`, `.jpg`, `.mp4`, `.zip`, `.pdf`, `.exe`, `.wasm`, and more — sent as base64
-- **Extensionless files**: Tracked and treated as text
-- **Ignored**: `node_modules/`, `.git/`, `dist/`, `.DS_Store`, `Thumbs.db`
-
-### Conflict Resolution
-
-| File Type | Strategy | Behavior |
-|-----------|----------|----------|
-| Text | Keep local, notify | Incoming file is rejected if local was modified. User can force-pull to override. |
-| Binary | Keep local, notify | Same as text — incoming binary is rejected on conflict. User can force-pull. |
+- Text files are sent as UTF-8 content.
+- Binary files are sent as base64.
+- Extensionless files are tracked.
+- Ignored paths include `node_modules/`, `.git/`, `dist/`, `.DS_Store`, and `Thumbs.db`.
 
 ### Sync State
 
-Each file is tracked with:
-- **Hash** — SHA-256 (16 hex chars) of file content
-- **Version** — incremented on every change (local or remote)
-- **Last synced hash** — the hash at the last successful sync point
-- **Locally modified flag** — `currentHash !== lastSyncedHash`
+Each tracked file stores:
 
-A file is considered "in conflict" when it's locally modified AND an incoming push has a different hash.
+- Hash: SHA-256 content hash
+- Version: incremented on every local or remote change
+- Last synced hash: hash at the last successful sync point
+- Locally modified flag: whether current hash differs from last synced hash
+
+A file is considered in conflict when it is locally modified and an incoming push has a different hash.
 
 ### Port Usage
 
 | Port | Service |
 |------|---------|
-| 18789 | OpenClaw Gateway (default) |
-| 18790 | Mesh P2P WebSocket (configurable) |
+| `18789` | OpenClaw Gateway default |
+| `18790` | Mesh P2P WebSocket default |
 
 ### Hook Integration
 
 | Hook | What It Does |
 |------|-------------|
-| `gateway_start` | Start discovery, transport, file watcher (if trackDir configured), auto-scan for peers after 5s |
+| `gateway_start` | Start discovery, transport, file watcher, and delayed auto-scan |
 | `gateway_stop` | Clean shutdown of all services |
-| `heartbeat_prompt_contribution` | Auto-connect to discovered peers, maintain connections, report pending approvals/changes |
+| `heartbeat_prompt_contribution` | Auto-connect to discovered peers, maintain connections, and surface queued notifications |
 
 ## Project Structure
 
-```
+```text
 openclaw-mesh-extension/
-├── openclaw.plugin.json      # Plugin manifest
-├── package.json              # Dependencies
-├── tsconfig.json             # TypeScript config
-├── index.ts                  # Entry point — wires everything together
-├── dist/                     # Compiled JavaScript (committed for install)
+├── openclaw.plugin.json
+├── package.json
+├── tsconfig.json
+├── index.ts
+├── dist/
 └── src/
-    ├── discovery.ts          # Subnet scanning + mDNS peer discovery
-    ├── transport.ts          # WebSocket P2P (approval, manifest, push/pull, conflict detection)
-    ├── sync-state.ts         # Hash+version tracking, conflict detection, pending changes
-    ├── events.ts             # Event store with priority-based delivery and deduplication
-    ├── file-watcher.ts       # Directory monitoring (all files, deletions, binary, ignore-next-change)
+    ├── discovery.ts
+    ├── transport.ts
+    ├── sync-state.ts
+    ├── events.ts
+    ├── file-watcher.ts
     └── tools/
-        ├── discover.ts       # mesh_discover
-        ├── status.ts         # mesh_status
-        ├── broadcast.ts      # mesh_broadcast
-        ├── sync.ts           # mesh_sync (push/pull with conflict safety)
-        ├── track.ts          # mesh_track
-        ├── approve.ts        # mesh_approve
-        ├── reject.ts         # mesh_reject
-        ├── connections.ts    # mesh_connections
-        ├── diff.ts           # mesh_diff (local-only, remote-only, modified, conflicted)
-        ├── events.ts         # mesh_events
-        └── ack.ts            # mesh_ack
+        ├── discover.ts
+        ├── status.ts
+        ├── broadcast.ts
+        ├── sync.ts
+        ├── track.ts
+        ├── approve.ts
+        ├── reject.ts
+        ├── connections.ts
+        ├── diff.ts
+        ├── events.ts
+        └── ack.ts
 ```
 
 ## Limitations
 
-1. **No encryption** — Traffic is unencrypted on local network (LAN-only by design)
-2. **No internet relay** — LAN only, no NAT traversal or relay server
-3. **No partial sync** — Entire files are sent (no delta/diff compression)
-4. **Single directory tracking** — Only one tracked directory at a time
-5. **No auto-sync** — User must explicitly push, pull, or broadcast
-6. **No push rejection feedback** — When a push is rejected due to conflict on the remote side, the sender isn't notified
+1. **No encryption**: traffic is unencrypted on the local network.
+2. **No internet relay**: LAN only, no NAT traversal or relay server.
+3. **No partial sync**: entire files are sent, not binary or text patches.
+4. **Single directory tracking**: only one tracked directory at a time.
+5. **No automatic background file syncing**: users explicitly push, pull, or broadcast.
+6. **Notification delivery is session-based**: immediate visibility needs an active OpenClaw session.
 
-## Why This Exists (vs GitHub)
+## Why This Exists vs GitHub
 
 | | GitHub | Mesh |
 |---|---|---|
 | Internet required | Yes | No |
-| Central server | Yes | No (peer-to-peer) |
+| Central server | Yes | No, peer-to-peer |
 | Account needed | Yes | No |
 | Setup friction | Create repo, commit, push, PR | Track folder, approve peer, broadcast |
-| Real-time | No (push/pull cycle) | Yes (WebSocket, instant) |
-| Works offline | No | Yes (on LAN) |
-| Conflict resolution | Manual (merge conflicts) | Keep local + notify user |
-| Privacy | Public by default | Private by default (only approved peers) |
-| Binary files | Painful (LFS, size limits) | Native (base64, no size limits) |
+| Real-time | No, push/pull cycle | Yes, WebSocket events |
+| Works offline | No | Yes, on LAN |
+| Conflict resolution | Manual merge conflicts | Keep local + notify user |
+| Privacy | Public by default | Private by default, approved peers only |
+| Binary files | Painful without LFS | Native base64 transfer |
 | Granular sync | Clone entire repo | Push/pull individual files |
 
-Mesh doesn't replace GitHub — it complements it. Use Mesh during active collaboration (hackathons, pair programming, offline work), then push to GitHub for persistence and the broader team.
+Mesh does not replace GitHub. It complements it during active collaboration, hackathons, pair programming, and offline work, then GitHub can remain the long-term source of truth.
 
 ## License
 
@@ -435,5 +371,5 @@ MIT
 
 ## Credits
 
-- OpenClaw - https://openclaw.ai
-- bonjour-service - https://github.com/onlxltd/bonjour-service
+- OpenClaw: https://openclaw.ai
+- bonjour-service: https://github.com/onlxltd/bonjour-service

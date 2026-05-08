@@ -13,7 +13,11 @@
       "mesh_sync",
       "mesh_track",
       "mesh_approve",
-      "mesh_diff"
+      "mesh_reject",
+      "mesh_connections",
+      "mesh_diff",
+      "mesh_events",
+      "mesh_ack"
     ]
   },
   "configSchema": {

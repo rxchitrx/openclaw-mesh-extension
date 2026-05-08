@@ -24,18 +24,30 @@ function mapTransportEventKind(type) {
             return "peer_approved";
         case "peer_denied":
             return "peer_denied";
+        case "peer_connected":
+        case "node_info_received":
+            return "peer_connected";
         case "peer_disconnected":
             return "peer_disconnected";
         case "manifest_received":
             return "manifest_received";
+        case "sync_requested":
+            return "sync_requested";
+        case "sync_applied":
+            return "sync_applied";
+        case "sync_failed":
+            return "sync_failed";
+        case "file_sent":
+            return "file_sent";
         case "file_received":
             return "file_received";
+        case "file_written":
+            return "file_written";
         case "file_conflict":
+        case "conflict":
             return "conflict";
         case "file_deleted":
             return "discovery_warning";
-        case "node_info_received":
-            return "peer_connected";
         default:
             return "discovery_warning";
     }

@@ -2,6 +2,7 @@ import type { DiscoveryService } from "../discovery.js";
 import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { FileWatcherService } from "../file-watcher.js";
+import type { MeshEventStore } from "../events.js";
 
 type TrackState = {
   fileWatcher: FileWatcherService | null;
@@ -15,6 +16,7 @@ type MeshServices = {
   transport: TransportService;
   syncState: SyncStateService;
   getTrackState: () => TrackState;
+  eventStore?: MeshEventStore;
 };
 
 export function createMeshStatusTool(services: MeshServices, _ctx: any) {
@@ -37,6 +39,8 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       const pending = transport.getPendingConnections();
       const watchedFiles = fileWatcher?.getWatchedFiles() ?? [];
       const pendingChanges = syncState.getPendingChanges();
+      const eventStats = services.eventStore?.getStats();
+      const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
       const now = new Date().toISOString();
 
       let message = `MESH STATUS\n`;
@@ -85,6 +89,23 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       }
       message += `\n`;
 
+      message += `EVENTS\n`;
+      message += `  Unread: ${eventStats?.unreadCount ?? 0}\n`;
+      message += `  Undelivered: ${eventStats?.undeliveredCount ?? 0}\n`;
+      if (eventStats?.lastDeliveredAt) {
+        message += `  Last delivered: ${new Date(eventStats.lastDeliveredAt).toISOString()}\n`;
+      }
+      if (eventStats?.lastAcknowledgedAt) {
+        message += `  Last acknowledged: ${new Date(eventStats.lastAcknowledgedAt).toISOString()}\n`;
+      }
+      if (recentEvents.length > 0) {
+        message += `  Recent unread:\n`;
+        for (const event of recentEvents) {
+          message += `    ${event.kind}${event.peerName ? ` from ${event.peerName}` : ""}: ${event.message}\n`;
+        }
+      }
+      message += `\n`;
+
       message += `FILE SYNC\n`;
       message += `  Watched: ${watchedFiles.length}\n`;
       message += `  Pending changes: ${pendingChanges.length}\n`;
@@ -102,6 +123,10 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
             peerCount: peers.length,
             connectionCount: connections.length,
             pendingApprovalCount: pending.length,
+            unreadEventCount: eventStats?.unreadCount ?? 0,
+            undeliveredEventCount: eventStats?.undeliveredCount ?? 0,
+            lastDeliveredEventAt: eventStats?.lastDeliveredAt ?? null,
+            lastAcknowledgedEventAt: eventStats?.lastAcknowledgedAt ?? null,
             watchedFiles: watchedFiles.length,
             pendingChanges: pendingChanges.length,
             health,

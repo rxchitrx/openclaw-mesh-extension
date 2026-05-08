@@ -25,8 +25,13 @@ export type NodeInfo = {
     trackingFileCount: number;
     trackingFiles: string[];
 };
+export type RemoteApplyRecord = {
+    path: string;
+    appliedAt: number;
+    from: string;
+};
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_disconnected" | "file_deleted" | "file_conflict" | "file_received" | "manifest_received" | "node_info_received";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written";
     message: string;
     peerName?: string;
     filePath?: string;
@@ -51,6 +56,7 @@ export type TransportService = {
     setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
     maintainConnections: () => Promise<void>;
     getNodeInfo: (peerName: string) => NodeInfo | null;
+    getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
     setNodeInfoProvider: (provider: () => NodeInfo) => void;
     setFileContentProvider: (provider: (relativePath: string) => Promise<{
         content: string;
