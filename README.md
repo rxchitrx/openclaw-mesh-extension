@@ -8,6 +8,10 @@ A local offline GitHub for OpenClaw nodes on the same network. No cloud server, 
 
 Turns multiple OpenClaw instances into a peer-to-peer file sharing system. Two people on the same WiFi can share project files directly with peer approval, manifest exchange, immediate event notifications, hash-based conflict detection, and fine-grained sync control.
 
+## Demo
+
+Video walkthrough: [assets/timeline-demo.mov](./assets/timeline-demo.mov)
+
 **Key features:**
 
 - Automatic peer discovery via subnet scanning + mDNS
