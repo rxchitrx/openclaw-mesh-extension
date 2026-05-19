@@ -23,6 +23,7 @@ export declare function createMeshConnectionsTool(services: {
             pendingConnections: {
                 peerName: string;
                 host: string;
+                direction: "incoming" | "outgoing";
                 connectedAt: number;
                 fingerprint: string;
                 identityVerified: boolean;

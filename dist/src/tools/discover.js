@@ -38,9 +38,12 @@ export function createMeshDiscoverTool(services, _ctx) {
                     const pending = transport.getPendingConnections();
                     const found = pending.find((p) => p.host === peerHost);
                     if (found) {
+                        const status = found.direction === "outgoing"
+                            ? `Connection request sent to ${peerHost}:${peerPort}. Waiting for that peer to approve.`
+                            : `Connected to ${peerHost}:${peerPort}. Peer '${found.peerName}' is asking this node for approval.`;
                         return {
-                            content: [{ type: "text", text: `Connected to ${peerHost}:${peerPort}. Peer '${found.peerName}' is awaiting your approval.` }],
-                            details: { ok: true, action: "manual_connect", host: peerHost, port: peerPort, peerName: found.peerName },
+                            content: [{ type: "text", text: status }],
+                            details: { ok: true, action: "manual_connect", host: peerHost, port: peerPort, peerName: found.peerName, direction: found.direction },
                         };
                     }
                     const connections = transport.getConnections();
@@ -82,9 +85,10 @@ export function createMeshDiscoverTool(services, _ctx) {
                     message += `\n`;
                 }
                 if (pending.length > 0) {
-                    message += `PENDING APPROVAL: ${pending.length}\n`;
+                    message += `PENDING CONNECTIONS: ${pending.length}\n`;
                     for (const p of pending) {
-                        message += `  ${p.peerName} from ${p.host}\n`;
+                        const label = p.direction === "incoming" ? "incoming approval needed" : "outgoing waiting for remote approval";
+                        message += `  ${p.peerName} from ${p.host} (${label})\n`;
                     }
                     message += `\n`;
                 }

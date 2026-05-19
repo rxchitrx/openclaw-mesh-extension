@@ -21,6 +21,7 @@ export type PendingConnection = {
     socket: any;
     host: string;
     connectedAt: number;
+    direction: "incoming" | "outgoing";
     fingerprint?: string;
     publicKey?: string;
     identityVerified?: boolean;

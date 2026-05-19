@@ -80,11 +80,12 @@ export function createMeshStatusTool(services, _ctx) {
                 }
             }
             if (pending.length > 0) {
-                message += `  PENDING APPROVAL: ${pending.length}\n`;
+                message += `  PENDING CONNECTIONS: ${pending.length}\n`;
                 for (const p of pending) {
+                    const direction = p.direction === "incoming" ? "incoming approval needed" : "outgoing waiting for remote approval";
                     const fingerprint = p.fingerprint ? ` fingerprint ${p.fingerprint}` : " fingerprint unverified";
                     const warning = p.fingerprintMismatch ? " WARNING: possible impersonation" : "";
-                    message += `    ${p.peerName} from ${p.host}${fingerprint}${warning}\n`;
+                    message += `    ${p.peerName} from ${p.host} (${direction})${fingerprint}${warning}\n`;
                 }
             }
             message += `\n`;

@@ -4,7 +4,7 @@ export function createMeshApproveTool(transport: TransportService, _ctx: any) {
   return {
     label: "Mesh Approve",
     name: "mesh_approve",
-    description: "Approve or deny a pending peer connection. ONLY use this tool when the user explicitly tells you to approve or deny a peer. Never approve or deny on your own.",
+    description: "Approve or deny an inbound pending peer connection. ONLY use this tool when the user explicitly tells you to approve or deny a peer that is asking to connect to this node. Never approve or deny outbound connection requests from this node.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -22,11 +22,20 @@ export function createMeshApproveTool(transport: TransportService, _ctx: any) {
     execute: async (_toolCallId: string, toolParams: { peerName: string; action: string }, _signal: any, _onUpdate: any) => {
       const { peerName, action } = toolParams;
       const pending = transport.getPendingConnections();
+      const inboundPending = pending.filter((p) => p.direction === "incoming");
       const now = new Date().toISOString();
 
-      const isPending = pending.some((p) => p.peerName === peerName);
+      const matchingPending = pending.find((p) => p.peerName === peerName);
+      const isPending = matchingPending?.direction === "incoming";
 
       if (!isPending) {
+        if (matchingPending?.direction === "outgoing") {
+          return {
+            content: [{ type: "text" as const, text: `Cannot ${action} '${peerName}' from this node. This is an outgoing connection request, so '${peerName}' must approve or deny it on their side.` }],
+            details: { ok: false, error: "not_authorized_to_approve_outgoing", peerName, direction: matchingPending.direction },
+          };
+        }
+
         const connected = transport.getConnections();
         if (connected.includes(peerName)) {
           return {
@@ -36,15 +45,15 @@ export function createMeshApproveTool(transport: TransportService, _ctx: any) {
         }
 
         let message = `No pending connection from '${peerName}'.\n`;
-        if (pending.length > 0) {
-          message += `Pending connections:\n`;
-          for (const p of pending) {
+        if (inboundPending.length > 0) {
+          message += `Inbound pending approvals:\n`;
+          for (const p of inboundPending) {
             const fingerprint = p.fingerprint ? ` fingerprint ${p.fingerprint}` : " fingerprint unverified";
             const warning = p.fingerprintMismatch ? " [POSSIBLE IMPERSONATION: fingerprint changed]" : "";
             message += `  ${p.peerName} from ${p.host}${fingerprint}${warning} (connected ${Math.floor((Date.now() - p.connectedAt) / 1000)}s ago)\n`;
           }
         } else {
-          message += `No pending connections right now.`;
+          message += `No inbound approvals are waiting on this node right now.`;
         }
 
         return {

@@ -35,23 +35,74 @@ const SCAN_TIMEOUT_MS = 400;
 const PING_TIMEOUT_MS = 2500;
 const MAX_SCAN_CONCURRENCY = 24;
 
-function getLocalIP(): string {
+function isPrivateIPv4(ip: string): boolean {
+  const parts = ip.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) return false;
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  return false;
+}
+
+function isIgnoredInterface(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower.startsWith("docker") ||
+    lower.startsWith("br-") ||
+    lower.startsWith("veth") ||
+    lower.startsWith("tailscale") ||
+    lower.startsWith("utun") ||
+    lower.startsWith("awdl") ||
+    lower.startsWith("llw")
+  );
+}
+
+function isPreferredLanInterface(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.startsWith("en") || lower.startsWith("eth") || lower.startsWith("wlan") || lower.startsWith("wi-fi") || lower.startsWith("wifi");
+}
+
+function getLocalIPv4s(): Array<{ name: string; address: string }> {
   const interfaces = os.networkInterfaces();
   const nonInternal: Array<{ name: string; address: string }> = [];
   for (const name of Object.keys(interfaces)) {
+    if (isIgnoredInterface(name)) continue;
     for (const iface of interfaces[name] || []) {
       if (iface.family === "IPv4" && !iface.internal) {
         nonInternal.push({ name, address: iface.address });
       }
     }
   }
-  return nonInternal.length === 0 ? "127.0.0.1" : nonInternal[nonInternal.length - 1].address;
+  return nonInternal;
+}
+
+function getLocalIP(): string {
+  const localIPv4s = getLocalIPv4s();
+  const preferred = localIPv4s.find(({ name, address }) => isPreferredLanInterface(name) && isPrivateIPv4(address));
+  if (preferred) return preferred.address;
+  const privateFallback = localIPv4s.find(({ address }) => isPrivateIPv4(address));
+  if (privateFallback) return privateFallback.address;
+  const fallback = localIPv4s[0];
+  return fallback ? fallback.address : "127.0.0.1";
 }
 
 function getSubnet(ip: string): string | null {
   const parts = ip.split(".");
   if (parts.length !== 4) return null;
   return parts.slice(0, 3).join(".");
+}
+
+function getScanTargets(): Array<{ ip: string; subnet: string }> {
+  const targets = new Map<string, string>();
+  for (const iface of getLocalIPv4s()) {
+    if (!isPrivateIPv4(iface.address)) continue;
+    const subnet = getSubnet(iface.address);
+    if (!subnet) continue;
+    targets.set(subnet, iface.address);
+  }
+  return Array.from(targets.entries()).map(([subnet, ip]) => ({ subnet, ip }));
 }
 
 function probePort(ip: string, port: number): Promise<boolean> {
@@ -167,35 +218,39 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
       if (browser) {
         try { browser.update(); } catch {}
       }
-      const localIP = getLocalIP();
-      const subnet = getSubnet(localIP);
-      if (subnet) {
-        logger.info(`Scanning subnet ${subnet}.0/24 for mesh nodes on port ${SCAN_PORT}...`);
+      const scanTargets = getScanTargets();
+      if (scanTargets.length > 0) {
+        const localSummary = scanTargets.map(({ subnet, ip }) => `${ip} -> ${subnet}.0/24`).join(", ");
+        logger.info(`Scanning local subnets for mesh nodes on port ${SCAN_PORT}: ${localSummary}`);
         try {
-          const found = await scanSubnet(subnet, SCAN_PORT, localIP);
-          for (const entry of found) {
-            const { ip, portOpen, pingOk } = entry;
-            const existingPeer = Array.from(peers.values()).find((p) => p.host === ip);
-            if (existingPeer) {
-              existingPeer.lastSeen = Date.now();
-              existingPeer.source = portOpen ? "subnet-scan" : "ping";
-              existingPeer.lastScanSeen = Date.now();
-              if (pingOk) existingPeer.lastPingSeen = Date.now();
-            } else {
-              const peerName = `node-${ip.split(".")[3]}`;
-              peers.set(peerName, {
-                name: peerName,
-                host: ip,
-                port: portOpen ? SCAN_PORT : port,
-                lastSeen: Date.now(),
-                source: portOpen ? "subnet-scan" : "ping",
-                lastScanSeen: Date.now(),
-                lastPingSeen: pingOk ? Date.now() : undefined,
-              });
-              logger.info(`Peer discovered (subnet scan): ${peerName} at ${ip}:${portOpen ? SCAN_PORT : port} (${pingOk ? "ping" : "tcp"})`);
+          let totalFound = 0;
+          for (const target of scanTargets) {
+            const found = await scanSubnet(target.subnet, SCAN_PORT, target.ip);
+            totalFound += found.length;
+            for (const entry of found) {
+              const { ip, portOpen, pingOk } = entry;
+              const existingPeer = Array.from(peers.values()).find((p) => p.host === ip);
+              if (existingPeer) {
+                existingPeer.lastSeen = Date.now();
+                existingPeer.source = portOpen ? "subnet-scan" : "ping";
+                existingPeer.lastScanSeen = Date.now();
+                if (pingOk) existingPeer.lastPingSeen = Date.now();
+              } else {
+                const peerName = `node-${ip.split(".")[3]}`;
+                peers.set(peerName, {
+                  name: peerName,
+                  host: ip,
+                  port: portOpen ? SCAN_PORT : port,
+                  lastSeen: Date.now(),
+                  source: portOpen ? "subnet-scan" : "ping",
+                  lastScanSeen: Date.now(),
+                  lastPingSeen: pingOk ? Date.now() : undefined,
+                });
+                logger.info(`Peer discovered (subnet scan): ${peerName} at ${ip}:${portOpen ? SCAN_PORT : port} (${pingOk ? "ping" : "tcp"})`);
+              }
             }
           }
-          logger.info(`Subnet scan complete: ${found.length} mesh node(s) found`);
+          logger.info(`Subnet scan complete: ${totalFound} mesh node(s) found`);
         } catch (err) {
           logger.error(`Subnet scan failed: ${err}`);
         }

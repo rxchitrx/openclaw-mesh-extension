@@ -53,6 +53,7 @@ export type PendingConnection = {
   socket: any;
   host: string;
   connectedAt: number;
+  direction: "incoming" | "outgoing";
   fingerprint?: string;
   publicKey?: string;
   identityVerified?: boolean;
@@ -257,6 +258,22 @@ export function createTransport(config: TransportConfig): TransportService {
   };
 
   const notifyPendingApproval = (pending: PendingConnection) => {
+    if (pending.direction !== "incoming") {
+      notify({
+        type: "peer_pending",
+        message: `Connection request sent to '${pending.peerName}' at ${pending.host}. Waiting for that peer to approve.`,
+        peerName: pending.peerName,
+        data: {
+          host: pending.host,
+          direction: pending.direction,
+          fingerprint: pending.fingerprint,
+          identityVerified: pending.identityVerified,
+          fingerprintMismatch: pending.fingerprintMismatch,
+        },
+      });
+      return;
+    }
+
     const warning = pending.fingerprintMismatch
       ? " Possible impersonation: peer name matches a trusted peer but fingerprint changed."
       : "";
@@ -266,6 +283,7 @@ export function createTransport(config: TransportConfig): TransportService {
       peerName: pending.peerName,
       data: {
         host: pending.host,
+        direction: pending.direction,
         fingerprint: pending.fingerprint,
         identityVerified: pending.identityVerified,
         fingerprintMismatch: pending.fingerprintMismatch,
@@ -306,7 +324,16 @@ export function createTransport(config: TransportConfig): TransportService {
       pending.publicKey = publicKey;
       pending.identityVerified = true;
       pending.fingerprintMismatch = mismatch;
+      if (pending.direction === "outgoing") {
+        notifyPendingApproval(pending);
+        return;
+      }
       if (trust.trusted && !mismatch) {
+        sendToPeer(peerName, {
+          type: "approval_response",
+          approved: true,
+          node: nodeName,
+        });
         const promoted = promotePendingConnection(peerName, pending, true);
         approvedPeers.add(peerName);
         touchTrustedPeer(peerName);
@@ -376,7 +403,7 @@ export function createTransport(config: TransportConfig): TransportService {
         case "approval_request":
           {
             const pending = pendingConnections.get(peerName);
-            if (pending && pending.identityVerified) {
+            if (pending && pending.direction === "incoming" && pending.identityVerified) {
               logger.info(`Approval request from: ${peerName}`);
               notifyPendingApproval(pending);
             }
@@ -393,6 +420,10 @@ export function createTransport(config: TransportConfig): TransportService {
           if (validation.value.approved) {
             const pending = pendingConnections.get(peerName);
             if (pending) {
+              if (pending.direction !== "outgoing") {
+                logger.warn(`Ignoring approval_response on inbound approval decision for peer: ${peerName}`);
+                break;
+              }
               if (!pending.identityVerified || pending.fingerprintMismatch || !pending.fingerprint || !pending.publicKey) {
                 logger.warn(`Ignoring approval_response from unverified peer: ${peerName}`);
                 break;
@@ -411,6 +442,10 @@ export function createTransport(config: TransportConfig): TransportService {
           } else {
             const pending = pendingConnections.get(peerName);
             if (pending) {
+              if (pending.direction !== "outgoing") {
+                logger.warn(`Ignoring denial response on inbound approval decision for peer: ${peerName}`);
+                break;
+              }
               pending.socket.close();
               pendingConnections.delete(peerName);
               notify({
@@ -910,6 +945,7 @@ export function createTransport(config: TransportConfig): TransportService {
             socket,
             host,
             connectedAt: Date.now(),
+            direction: "incoming",
             fingerprint: typeof req.headers["x-mesh-fingerprint"] === "string" ? req.headers["x-mesh-fingerprint"] : undefined,
             publicKey: decodePublicKeyFromWire(req.headers["x-mesh-public-key"]) || undefined,
             identityVerified: false,
@@ -998,6 +1034,7 @@ export function createTransport(config: TransportConfig): TransportService {
               socket: ws,
               host: peer.host,
               connectedAt: Date.now(),
+              direction: "outgoing",
               identityVerified: false,
             };
             pendingConnections.set(peer.name, pending);
@@ -1048,6 +1085,10 @@ export function createTransport(config: TransportConfig): TransportService {
     approveConnection(peerName: string): boolean {
       const pending = pendingConnections.get(peerName);
       if (!pending) return false;
+      if (pending.direction !== "incoming") {
+        logger.warn(`Refusing to approve outbound connection request locally: ${peerName}`);
+        return false;
+      }
       if (!pending.identityVerified || !pending.fingerprint || !pending.publicKey || pending.fingerprintMismatch) {
         logger.warn(`Refusing to approve unverified or mismatched peer: ${peerName}`);
         return false;
@@ -1078,6 +1119,10 @@ export function createTransport(config: TransportConfig): TransportService {
     denyConnection(peerName: string): boolean {
       const pending = pendingConnections.get(peerName);
       if (!pending) return false;
+      if (pending.direction !== "incoming") {
+        logger.warn(`Refusing to deny outbound connection request locally: ${peerName}`);
+        return false;
+      }
 
       sendToPeer(peerName, {
         type: "approval_response",

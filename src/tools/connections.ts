@@ -25,15 +25,16 @@ export function createMeshConnectionsTool(
       message += `Timestamp: ${new Date(now).toISOString()}\n\n`;
 
       if (pending.length > 0) {
-        message += `PENDING APPROVALS\n`;
+        message += `PENDING CONNECTIONS\n`;
         for (const item of pending) {
+          const direction = item.direction === "incoming" ? "incoming approval needed" : "outgoing waiting for remote approval";
           const fingerprint = item.fingerprint ? ` | fingerprint: ${item.fingerprint}` : " | fingerprint: unverified";
           const warning = item.fingerprintMismatch ? " | WARNING: possible impersonation" : "";
-          message += `  ${item.peerName} from ${item.host}${fingerprint}${warning} (${Math.floor((now - item.connectedAt) / 1000)}s ago)\n`;
+          message += `  ${item.peerName} from ${item.host} | ${direction}${fingerprint}${warning} (${Math.floor((now - item.connectedAt) / 1000)}s ago)\n`;
         }
         message += `\n`;
       } else {
-        message += `PENDING APPROVALS\n  none\n\n`;
+        message += `PENDING CONNECTIONS\n  none\n\n`;
       }
 
       if (connections.length > 0) {
@@ -89,6 +90,7 @@ export function createMeshConnectionsTool(
           pendingConnections: pending.map((item) => ({
             peerName: item.peerName,
             host: item.host,
+            direction: item.direction,
             connectedAt: item.connectedAt,
             fingerprint: item.fingerprint,
             identityVerified: item.identityVerified,

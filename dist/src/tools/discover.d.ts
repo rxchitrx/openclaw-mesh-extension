@@ -32,6 +32,7 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             host?: undefined;
             port?: undefined;
             peerName?: undefined;
+            direction?: undefined;
             localNode?: undefined;
             peers?: undefined;
             connections?: undefined;
@@ -49,6 +50,7 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             host: string;
             port: number;
             peerName: string;
+            direction: "incoming" | "outgoing";
             error?: undefined;
             localNode?: undefined;
             peers?: undefined;
@@ -68,6 +70,7 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             port: number;
             error?: undefined;
             peerName?: undefined;
+            direction?: undefined;
             localNode?: undefined;
             peers?: undefined;
             connections?: undefined;
@@ -86,6 +89,7 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             port: number;
             action?: undefined;
             peerName?: undefined;
+            direction?: undefined;
             localNode?: undefined;
             peers?: undefined;
             connections?: undefined;
@@ -113,6 +117,7 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             host?: undefined;
             port?: undefined;
             peerName?: undefined;
+            direction?: undefined;
         };
     }>;
 };

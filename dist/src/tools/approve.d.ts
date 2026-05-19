@@ -27,10 +27,26 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
         }[];
         details: {
             ok: boolean;
+            error: string;
+            peerName: string;
+            direction: "outgoing";
+            alreadyConnected?: undefined;
+            action?: undefined;
+            fingerprint?: undefined;
+            timestamp?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
             alreadyConnected: boolean;
             error?: undefined;
-            action?: undefined;
             peerName?: undefined;
+            direction?: undefined;
+            action?: undefined;
             fingerprint?: undefined;
             timestamp?: undefined;
         };
@@ -42,9 +58,10 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
         details: {
             ok: boolean;
             error: string;
+            peerName?: undefined;
+            direction?: undefined;
             alreadyConnected?: undefined;
             action?: undefined;
-            peerName?: undefined;
             fingerprint?: undefined;
             timestamp?: undefined;
         };
@@ -59,8 +76,9 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
             peerName: string;
             fingerprint: string;
             timestamp: string;
-            alreadyConnected?: undefined;
             error?: undefined;
+            direction?: undefined;
+            alreadyConnected?: undefined;
         };
     } | {
         content: {
@@ -72,8 +90,9 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
             action: string;
             peerName: string;
             timestamp: string;
-            alreadyConnected?: undefined;
             error?: undefined;
+            direction?: undefined;
+            alreadyConnected?: undefined;
             fingerprint?: undefined;
         };
     }>;
