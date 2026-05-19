@@ -45,7 +45,15 @@ function getLocalIP(): string {
       }
     }
   }
-  return nonInternal.length === 0 ? "127.0.0.1" : nonInternal[nonInternal.length - 1].address;
+  if (nonInternal.length === 0) return "127.0.0.1";
+
+  const preferred = nonInternal.find((i) => i.name.startsWith("wlan") || i.name.startsWith("eth") || i.name.startsWith("en"));
+  if (preferred) return preferred.address;
+
+  const nonDocker = nonInternal.find((i) => !i.name.startsWith("docker") && !i.name.startsWith("br-") && !i.name.startsWith("veth") && !i.name.startsWith("tailscale"));
+  if (nonDocker) return nonDocker.address;
+
+  return nonInternal[0].address;
 }
 
 function getSubnet(ip: string): string | null {
