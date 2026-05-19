@@ -10,6 +10,7 @@ import {
   formatUrgentMeshSystemEvent,
   isUrgentMeshEvent,
 } from "../dist/src/urgent-notifications.js";
+import { summarizeMeshEvents } from "../dist/src/events.js";
 import {
   createMeshSessionTargetStore,
 } from "../dist/src/mesh-session-target.js";
@@ -165,6 +166,30 @@ const deniedInboundChatText = formatUrgentMeshChatMessage({
 });
 assert.match(deniedInboundChatText, /denied your connection/);
 
+const approvedUnknownDirectionSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-16b", kind: "peer_approved",
+  details: {},
+});
+assert.match(approvedUnknownDirectionSystemText, /approval recorded/i);
+
+const approvedUnknownDirectionChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-16c", kind: "peer_approved",
+  details: {},
+});
+assert.match(approvedUnknownDirectionChatText, /Approval recorded/i);
+
+const deniedUnknownDirectionSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-16d", kind: "peer_denied",
+  details: {},
+});
+assert.match(deniedUnknownDirectionSystemText, /denial recorded/i);
+
+const deniedUnknownDirectionChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-16e", kind: "peer_denied",
+  details: {},
+});
+assert.match(deniedUnknownDirectionChatText, /Denial recorded/i);
+
 const fileSentSystemText = formatUrgentMeshSystemEvent({
   ...pendingEvent, id: "evt-17", kind: "file_sent",
   peerName: "node-b",
@@ -204,6 +229,25 @@ const discoveryWarningChatText = formatUrgentMeshChatMessage({
   message: "Network issue detected.",
 });
 assert.match(discoveryWarningChatText, /Discovery warning/i);
+
+const summaryText = summarizeMeshEvents([
+  {
+    ...pendingEvent,
+    id: "evt-23",
+    kind: "discovery_warning",
+    message: "Network issue detected.",
+  },
+  {
+    ...pendingEvent,
+    id: "evt-24",
+    kind: "file_sent",
+    peerName: "node-b",
+    filePath: "src/foo.ts",
+    message: "Sent 'src/foo.ts' to 'node-b'.",
+  },
+]);
+assert.match(summaryText, /Network issue detected\./);
+assert.match(summaryText, /file send from node-b/i);
 
 const chatMessage = formatUrgentMeshChatMessage(pendingEvent);
 assert.match(chatMessage, /Mesh approval needed/);

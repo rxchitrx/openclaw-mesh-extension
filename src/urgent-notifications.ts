@@ -71,20 +71,31 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function peerApprovalDirectionLabel(event: MeshEventRecord): string {
+function eventDirection(event: MeshEventRecord): "inbound" | "outbound" | null {
   const direction = event.details?.direction;
+  return direction === "inbound" || direction === "outbound" ? direction : null;
+}
+
+function peerApprovalDirectionLabel(event: MeshEventRecord): string {
+  const direction = eventDirection(event);
   if (direction === "inbound") {
     return `Peer '${event.peerName ?? "Unknown"}' approved your connection request. Tell the user.`;
   }
-  return `You approved peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+  if (direction === "outbound") {
+    return `You approved peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+  }
+  return `Connection approval recorded for peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
 }
 
 function peerDenialDirectionLabel(event: MeshEventRecord): string {
-  const direction = event.details?.direction;
+  const direction = eventDirection(event);
   if (direction === "inbound") {
     return `Peer '${event.peerName ?? "Unknown"}' denied your connection request. Tell the user.`;
   }
-  return `You denied peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+  if (direction === "outbound") {
+    return `You denied peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+  }
+  return `Connection denial recorded for peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
 }
 
 export function formatUrgentMeshSystemEvent(event: MeshEventRecord): string {
@@ -131,7 +142,7 @@ export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
   const host = asString(event.details?.host);
   const mismatch = event.details?.fingerprintMismatch === true;
   const peer = event.peerName ?? "Unknown peer";
-  const direction = event.details?.direction;
+  const direction = eventDirection(event);
 
   if (event.kind === "peer_pending_approval") {
     return [
@@ -153,14 +164,20 @@ export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
     if (direction === "inbound") {
       return `**Connection approved**\n\nPeer \`${peer}\` approved your connection request.`;
     }
-    return `**Peer approved**\n\nYou approved peer \`${peer}\`.`;
+    if (direction === "outbound") {
+      return `**Peer approved**\n\nYou approved peer \`${peer}\`.`;
+    }
+    return `**Approval recorded**\n\nA connection approval was recorded for peer \`${peer}\`.`;
   }
 
   if (event.kind === "peer_denied") {
     if (direction === "inbound") {
       return `**Connection denied**\n\nPeer \`${peer}\` denied your connection request.`;
     }
-    return `**Peer denied**\n\nYou denied peer \`${peer}\`.`;
+    if (direction === "outbound") {
+      return `**Peer denied**\n\nYou denied peer \`${peer}\`.`;
+    }
+    return `**Denial recorded**\n\nA connection denial was recorded for peer \`${peer}\`.`;
   }
 
   if (event.kind === "file_sent") {

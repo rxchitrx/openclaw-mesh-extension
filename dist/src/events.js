@@ -6,6 +6,7 @@ const HIGH_PRIORITY = new Set([
     "peer_disconnected",
     "sync_failed",
     "file_rejected",
+    "discovery_warning",
 ]);
 function createId() {
     return `mesh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

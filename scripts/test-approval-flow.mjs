@@ -28,13 +28,17 @@ function syncState() {
   };
 }
 
-function makeTransport(nodeName, port) {
-  return createTransport({
+function makeTransport(nodeName, port, notifications) {
+  const transport = createTransport({
     nodeName,
     port,
     syncState: syncState(),
     logger: logger(),
   });
+  transport.setNotificationHandler((notification) => {
+    notifications.push(notification);
+  });
+  return transport;
 }
 
 async function waitFor(predicate, label, timeoutMs = 3000) {
@@ -47,12 +51,14 @@ async function waitFor(predicate, label, timeoutMs = 3000) {
 }
 
 async function withPair(leftName, rightName, leftPort, rightPort, run) {
-  const left = makeTransport(leftName, leftPort);
-  const right = makeTransport(rightName, rightPort);
+  const leftNotifications = [];
+  const rightNotifications = [];
+  const left = makeTransport(leftName, leftPort, leftNotifications);
+  const right = makeTransport(rightName, rightPort, rightNotifications);
   await left.start();
   await right.start();
   try {
-    await run(left, right);
+    await run(left, right, leftNotifications, rightNotifications);
   } finally {
     await left.stop();
     await right.stop();
@@ -60,7 +66,7 @@ async function withPair(leftName, rightName, leftPort, rightPort, run) {
 }
 
 try {
-  await withPair("node-a", "node-b", basePort, basePort + 1, async (left, right) => {
+  await withPair("node-a", "node-b", basePort, basePort + 1, async (left, right, leftNotifications, rightNotifications) => {
     assert.equal(await left.connectToPeer({ name: "node-b", host: "127.0.0.1", port: basePort + 1, lastSeen: Date.now(), source: "transport" }), true);
 
     await waitFor(
@@ -78,9 +84,17 @@ try {
     assert.equal(right.approveConnection("node-a"), true);
     await waitFor(() => left.getConnections().includes("node-b"), "outgoing side approval response");
     await waitFor(() => right.getConnections().includes("node-a"), "incoming side approved connection");
+    await waitFor(
+      () => leftNotifications.some((event) => event.type === "peer_approved" && event.data?.direction === "inbound"),
+      "outgoing approval notification direction",
+    );
+    await waitFor(
+      () => rightNotifications.some((event) => event.type === "peer_approved" && event.data?.direction === "outbound"),
+      "incoming approval notification direction",
+    );
   });
 
-  await withPair("node-c", "node-d", basePort + 2, basePort + 3, async (left, right) => {
+  await withPair("node-c", "node-d", basePort + 2, basePort + 3, async (left, right, leftNotifications, rightNotifications) => {
     assert.equal(await left.connectToPeer({ name: "node-d", host: "127.0.0.1", port: basePort + 3, lastSeen: Date.now(), source: "transport" }), true);
 
     await waitFor(
@@ -93,9 +107,17 @@ try {
     await waitFor(() => left.getPendingConnections().length === 0, "outgoing pending removal after deny");
     assert.equal(left.getConnections().includes("node-d"), false);
     assert.equal(right.getConnections().includes("node-c"), false);
+    await waitFor(
+      () => leftNotifications.some((event) => event.type === "peer_denied" && event.data?.direction === "inbound"),
+      "outgoing denial notification direction",
+    );
+    await waitFor(
+      () => rightNotifications.some((event) => event.type === "peer_denied" && event.data?.direction === "outbound"),
+      "incoming denial notification direction",
+    );
   });
 
-  await withPair("node-e", "node-f", basePort + 4, basePort + 5, async (left, right) => {
+  await withPair("node-e", "node-f", basePort + 4, basePort + 5, async (left, right, leftNotifications, rightNotifications) => {
     const identity = loadOrCreateIdentity();
     trustPeer("node-f", identity.fingerprint, identity.publicKey);
 
@@ -103,6 +125,14 @@ try {
 
     await waitFor(() => left.getConnections().includes("node-f"), "trusted inbound auto approval");
     await waitFor(() => right.getConnections().includes("node-e"), "trusted outbound approval response");
+    await waitFor(
+      () => leftNotifications.some((event) => event.type === "peer_approved" && event.data?.direction === "outbound"),
+      "trusted auto-approval notification direction",
+    );
+    await waitFor(
+      () => rightNotifications.some((event) => event.type === "peer_approved" && event.data?.direction === "inbound"),
+      "trusted requester approval notification direction",
+    );
   });
 } finally {
   await fs.rm(tempHome, { recursive: true, force: true });

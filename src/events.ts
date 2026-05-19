@@ -67,6 +67,7 @@ const HIGH_PRIORITY = new Set<MeshEventKind>([
   "peer_disconnected",
   "sync_failed",
   "file_rejected",
+  "discovery_warning",
 ]);
 
 function createId(): string {
