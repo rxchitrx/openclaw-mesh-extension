@@ -27,7 +27,9 @@ export function createMeshConnectionsTool(
       if (pending.length > 0) {
         message += `PENDING APPROVALS\n`;
         for (const item of pending) {
-          message += `  ${item.peerName} from ${item.host} (${Math.floor((now - item.connectedAt) / 1000)}s ago)\n`;
+          const fingerprint = item.fingerprint ? ` | fingerprint: ${item.fingerprint}` : " | fingerprint: unverified";
+          const warning = item.fingerprintMismatch ? " | WARNING: possible impersonation" : "";
+          message += `  ${item.peerName} from ${item.host}${fingerprint}${warning} (${Math.floor((now - item.connectedAt) / 1000)}s ago)\n`;
         }
         message += `\n`;
       } else {
@@ -44,6 +46,14 @@ export function createMeshConnectionsTool(
           const inFlight = transport.getInFlightSends(peerName);
           const lastEvent = recentEvents.find((event) => event.peerName === peerName);
           message += `  ${peerName}`;
+          const fingerprint = transport.getPeerFingerprint(peerName);
+          const warning = transport.getPeerTrustWarning(peerName);
+          if (fingerprint) {
+            message += ` | fingerprint: ${fingerprint}`;
+          }
+          if (warning) {
+            message += ` | WARNING: ${warning}`;
+          }
           if (manifest) {
             message += ` | manifest: ${manifest.length} files`;
           }
@@ -80,9 +90,14 @@ export function createMeshConnectionsTool(
             peerName: item.peerName,
             host: item.host,
             connectedAt: item.connectedAt,
+            fingerprint: item.fingerprint,
+            identityVerified: item.identityVerified,
+            fingerprintMismatch: item.fingerprintMismatch,
           })),
           peerState: connections.map((peerName) => ({
             peerName,
+            fingerprint: transport.getPeerFingerprint(peerName),
+            trustWarning: transport.getPeerTrustWarning(peerName),
             remoteAppliedFiles: transport.getRemoteAppliedFiles(peerName),
             remoteRejectedFiles: transport.getRemoteRejectedFiles(peerName),
             inFlightSends: transport.getInFlightSends(peerName),

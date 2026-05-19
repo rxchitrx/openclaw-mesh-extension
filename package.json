@@ -9,7 +9,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "test:diff": "node scripts/test-diff.mjs"
+    "test:diff": "node scripts/test-diff.mjs",
+    "test:path-safety": "node scripts/test-path-safety.mjs",
+    "test:protocol": "node scripts/test-protocol-validation.mjs",
+    "test:identity": "node scripts/test-peer-identity.mjs"
   },
   "dependencies": {
     "@homebridge/ciao": "^1.3.6",

@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { normalizeRelativePath, resolveInsideRoot } from "./path-safety.js";
 const IGNORE_PATTERNS = [/node_modules/, /\.git/, /dist/, /\.DS_Store/, /Thumbs\.db/];
 const TEXT_EXTENSIONS = new Set([
     ".md", ".txt", ".json", ".ts", ".js", ".tsx", ".jsx",
@@ -205,14 +206,19 @@ export function createFileWatcher(config) {
             }
         },
         async getFileContent(relativePath) {
-            const tracked = watchedFiles.get(relativePath);
+            const safeRelativePath = normalizeRelativePath(relativePath);
+            if (!safeRelativePath)
+                return null;
+            const tracked = watchedFiles.get(safeRelativePath);
             if (!tracked)
                 return null;
-            const cached = fileContents.get(relativePath);
+            const cached = fileContents.get(safeRelativePath);
             if (cached !== undefined) {
                 return { content: cached, isBinary: tracked.isBinary };
             }
-            const filePath = path.join(workspaceDir, relativePath);
+            const filePath = resolveInsideRoot(workspaceDir, safeRelativePath);
+            if (!filePath)
+                return null;
             if (tracked.isBinary) {
                 const content = await readFileAsBase64(filePath);
                 return content ? { content, isBinary: true } : null;

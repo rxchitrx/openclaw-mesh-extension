@@ -34,7 +34,9 @@ export function createMeshApproveTool(transport, _ctx) {
                 if (pending.length > 0) {
                     message += `Pending connections:\n`;
                     for (const p of pending) {
-                        message += `  ${p.peerName} from ${p.host} (connected ${Math.floor((Date.now() - p.connectedAt) / 1000)}s ago)\n`;
+                        const fingerprint = p.fingerprint ? ` fingerprint ${p.fingerprint}` : " fingerprint unverified";
+                        const warning = p.fingerprintMismatch ? " [POSSIBLE IMPERSONATION: fingerprint changed]" : "";
+                        message += `  ${p.peerName} from ${p.host}${fingerprint}${warning} (connected ${Math.floor((Date.now() - p.connectedAt) / 1000)}s ago)\n`;
                     }
                 }
                 else {
@@ -48,13 +50,14 @@ export function createMeshApproveTool(transport, _ctx) {
             if (action === "approve") {
                 const success = transport.approveConnection(peerName);
                 if (success) {
+                    const fingerprint = transport.getPeerFingerprint(peerName);
                     return {
-                        content: [{ type: "text", text: `Approved peer '${peerName}'. Manifests will be exchanged automatically.` }],
-                        details: { ok: true, action: "approve", peerName, timestamp: now },
+                        content: [{ type: "text", text: `Approved peer '${peerName}'${fingerprint ? ` (${fingerprint})` : ""}. Manifests will be exchanged automatically.` }],
+                        details: { ok: true, action: "approve", peerName, fingerprint, timestamp: now },
                     };
                 }
                 return {
-                    content: [{ type: "text", text: `Failed to approve '${peerName}'. Connection may have been lost.` }],
+                    content: [{ type: "text", text: `Failed to approve '${peerName}'. The connection may be lost, unverified, or flagged for fingerprint mismatch.` }],
                     details: { ok: false, error: "approve_failed" },
                 };
             }

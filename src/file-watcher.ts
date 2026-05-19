@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { SyncStateService } from "./sync-state.js";
+import { normalizeRelativePath, resolveInsideRoot } from "./path-safety.js";
 
 export type FileWatcherConfig = {
   workspaceDir: string;
@@ -253,15 +254,19 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     },
 
     async getFileContent(relativePath: string): Promise<{ content: string; isBinary: boolean } | null> {
-      const tracked = watchedFiles.get(relativePath);
+      const safeRelativePath = normalizeRelativePath(relativePath);
+      if (!safeRelativePath) return null;
+
+      const tracked = watchedFiles.get(safeRelativePath);
       if (!tracked) return null;
 
-      const cached = fileContents.get(relativePath);
+      const cached = fileContents.get(safeRelativePath);
       if (cached !== undefined) {
         return { content: cached, isBinary: tracked.isBinary };
       }
 
-      const filePath = path.join(workspaceDir, relativePath);
+      const filePath = resolveInsideRoot(workspaceDir, safeRelativePath);
+      if (!filePath) return null;
       if (tracked.isBinary) {
         const content = await readFileAsBase64(filePath);
         return content ? { content, isBinary: true } : null;

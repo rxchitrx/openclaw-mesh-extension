@@ -12,12 +12,19 @@ export type Connection = {
     socket: any;
     isAlive: boolean;
     approved: boolean;
+    fingerprint?: string;
+    publicKey?: string;
+    identityVerified?: boolean;
 };
 export type PendingConnection = {
     peerName: string;
     socket: any;
     host: string;
     connectedAt: number;
+    fingerprint?: string;
+    publicKey?: string;
+    identityVerified?: boolean;
+    fingerprintMismatch?: boolean;
 };
 export type NodeInfo = {
     nodeName: string;
@@ -80,6 +87,8 @@ export type TransportService = {
     getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
     getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
     getInFlightSends: (peerName?: string) => InFlightSendRecord[];
+    getPeerFingerprint: (peerName: string) => string | null;
+    getPeerTrustWarning: (peerName: string) => string | null;
     setNodeInfoProvider: (provider: () => NodeInfo) => void;
     setFileContentProvider: (provider: (relativePath: string) => Promise<{
         content: string;

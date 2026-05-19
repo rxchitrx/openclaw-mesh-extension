@@ -31,6 +31,7 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
             error?: undefined;
             action?: undefined;
             peerName?: undefined;
+            fingerprint?: undefined;
             timestamp?: undefined;
         };
     } | {
@@ -44,7 +45,22 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
             alreadyConnected?: undefined;
             action?: undefined;
             peerName?: undefined;
+            fingerprint?: undefined;
             timestamp?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            peerName: string;
+            fingerprint: string;
+            timestamp: string;
+            alreadyConnected?: undefined;
+            error?: undefined;
         };
     } | {
         content: {
@@ -58,6 +74,7 @@ export declare function createMeshApproveTool(transport: TransportService, _ctx:
             timestamp: string;
             alreadyConnected?: undefined;
             error?: undefined;
+            fingerprint?: undefined;
         };
     }>;
 };

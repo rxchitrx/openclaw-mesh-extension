@@ -4,6 +4,7 @@ import { createSyncState } from "./src/sync-state.js";
 import { createDiscovery } from "./src/discovery.js";
 import { createMeshEventStore, summarizeMeshEvents } from "./src/events.js";
 import { createFileWatcher } from "./src/file-watcher.js";
+import { resolveInsideRoot } from "./src/path-safety.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
@@ -212,7 +213,11 @@ const meshPlugin = {
                 logger.warn(`Cannot write file ${relativePath}: no track directory set`);
                 throw new Error("no_track_directory");
             }
-            const filePath = path.join(currentTrackDir, relativePath);
+            const filePath = resolveInsideRoot(currentTrackDir, relativePath);
+            if (!filePath) {
+                logger.warn(`Rejected unsafe received file path: ${relativePath}`);
+                throw new Error("invalid_path");
+            }
             const dir = path.dirname(filePath);
             await fs.promises.mkdir(dir, { recursive: true });
             if (isBinary) {

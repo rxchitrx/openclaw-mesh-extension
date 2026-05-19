@@ -64,7 +64,8 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       if (peers.length > 0) {
         for (const p of peers) {
           const connected = connections.includes(p.name);
-          message += `    ${p.name} at ${p.host}:${p.port} ${connected ? "[connected]" : ""}\n`;
+          const fingerprint = transport.getPeerFingerprint(p.name);
+          message += `    ${p.name} at ${p.host}:${p.port} ${connected ? "[connected]" : ""}${fingerprint ? ` fingerprint ${fingerprint}` : ""}\n`;
         }
       }
       message += `  Connected: ${connections.length}\n`;
@@ -73,6 +74,14 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
           const manifest = transport.getRemoteManifest(name);
           const info = transport.getNodeInfo(name);
           message += `    ${name}`;
+          const fingerprint = transport.getPeerFingerprint(name);
+          const warning = transport.getPeerTrustWarning(name);
+          if (fingerprint) {
+            message += ` | fingerprint: ${fingerprint}`;
+          }
+          if (warning) {
+            message += ` | WARNING: ${warning}`;
+          }
           if (info) {
             const dirStr = info.trackingDir || "not tracking";
             message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
@@ -99,7 +108,9 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       if (pending.length > 0) {
         message += `  PENDING APPROVAL: ${pending.length}\n`;
         for (const p of pending) {
-          message += `    ${p.peerName} from ${p.host}\n`;
+          const fingerprint = p.fingerprint ? ` fingerprint ${p.fingerprint}` : " fingerprint unverified";
+          const warning = p.fingerprintMismatch ? " WARNING: possible impersonation" : "";
+          message += `    ${p.peerName} from ${p.host}${fingerprint}${warning}\n`;
         }
       }
       message += `\n`;
