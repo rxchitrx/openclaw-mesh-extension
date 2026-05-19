@@ -23,12 +23,26 @@ export type SystemEventOptions = {
   trusted?: boolean;
 };
 
+export type UrgentNotificationTarget = {
+  sessionKey: string;
+  deliveryContext?: unknown;
+};
+
+export type ChatInjectionRequest = {
+  sessionKey: string;
+  message: string;
+  label?: string;
+  idempotencyKey?: string;
+};
+
 export type UrgentNotificationScheduler = {
   schedule: (event: MeshEventRecord) => Promise<boolean>;
 };
 
 export type UrgentNotificationSchedulerOptions = {
   getSessionKey: () => string | null;
+  getSessionTarget?: () => UrgentNotificationTarget | null;
+  injectChatMessage?: (request: ChatInjectionRequest) => Promise<boolean>;
   enqueueSystemEvent?: (text: string, options: SystemEventOptions) => boolean;
   requestHeartbeat?: (request: HeartbeatWakeRequest) => void;
   runHeartbeatOnce?: (request: {
@@ -70,6 +84,37 @@ export function formatUrgentMeshSystemEvent(event: MeshEventRecord): string {
   return `[mesh] Urgent mesh event: ${event.message} Tell the user immediately in plain language.`;
 }
 
+export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
+  const fingerprint = asString(event.details?.fingerprint);
+  const host = asString(event.details?.host);
+  const mismatch = event.details?.fingerprintMismatch === true;
+  const peer = event.peerName ?? "Unknown peer";
+
+  if (event.kind === "peer_pending_approval") {
+    return [
+      "**Mesh approval needed**",
+      "",
+      "A peer wants to connect:",
+      `- **Peer:** \`${peer}\``,
+      host ? `- **IP:** \`${host}\`` : null,
+      fingerprint ? `- **Fingerprint:** \`${fingerprint}\`` : null,
+      mismatch ? "- **Warning:** this peer name matches a trusted peer, but the fingerprint changed." : null,
+      "",
+      "Do you want to approve or deny this connection?",
+      "",
+      "Reply with `approve` to accept it, or `deny` to reject it.",
+    ].filter((line): line is string => line !== null).join("\n");
+  }
+
+  return `**Urgent mesh event**\n\n${event.message}`;
+}
+
+function isWebchatDeliveryContext(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const context = value as Record<string, unknown>;
+  return context.channel === "webchat";
+}
+
 export function createUrgentNotificationScheduler(
   options: UrgentNotificationSchedulerOptions,
 ): UrgentNotificationScheduler {
@@ -83,23 +128,44 @@ export function createUrgentNotificationScheduler(
         return false;
       }
 
-      const sessionKey = options.getSessionKey();
+      const target = options.getSessionTarget?.();
+      const sessionKey = target?.sessionKey ?? options.getSessionKey();
       if (!sessionKey) {
         options.logger?.debug?.(`No active session target for urgent mesh event ${event.kind}`);
-        return false;
-      }
-      if (!options.enqueueSystemEvent) {
-        options.logger?.warn?.("OpenClaw system-event runtime is unavailable for urgent mesh event");
-        return false;
-      }
-      if (!options.runHeartbeatOnce && !options.requestHeartbeat) {
-        options.logger?.warn?.("OpenClaw heartbeat runtime is unavailable for urgent mesh event");
         return false;
       }
 
       const timestamp = now();
       if (lastWakeAt > 0 && timestamp - lastWakeAt < cooldownMs) {
         options.logger?.debug?.(`Skipping urgent mesh wake during cooldown for ${event.kind}`);
+        return false;
+      }
+
+      const shouldInjectWebchat = Boolean(options.injectChatMessage && isWebchatDeliveryContext(target?.deliveryContext));
+      if (shouldInjectWebchat && options.injectChatMessage) {
+        try {
+          const injected = await options.injectChatMessage({
+            sessionKey,
+            message: formatUrgentMeshChatMessage(event),
+            label: "Mesh",
+            idempotencyKey: `mesh:${event.id}`,
+          });
+          options.logger?.debug?.(`Injected mesh chat notification ${event.id}: ${injected}`);
+          if (injected) {
+            lastWakeAt = timestamp;
+            return true;
+          }
+        } catch (err) {
+          options.logger?.warn?.(`Could not inject mesh chat notification: ${err}`);
+        }
+      }
+
+      if (!options.enqueueSystemEvent) {
+        options.logger?.warn?.("OpenClaw system-event runtime is unavailable for urgent mesh event");
+        return false;
+      }
+      if (!options.runHeartbeatOnce && !options.requestHeartbeat) {
+        options.logger?.warn?.("OpenClaw heartbeat runtime is unavailable for urgent mesh event");
         return false;
       }
 

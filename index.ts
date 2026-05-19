@@ -1,5 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 import { createSyncState, type SyncStateService } from "./src/sync-state.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
@@ -24,8 +26,30 @@ import {
 } from "./src/urgent-notifications.js";
 import {
   DEFAULT_NOTIFICATION_SESSION_TTL_MS,
+  type MeshSessionTarget,
   createMeshSessionTargetStore,
 } from "./src/mesh-session-target.js";
+
+const execFileAsync = promisify(execFile);
+
+function readSessionDeliveryContext(sessionKey: string): unknown {
+  const match = /^agent:([^:]+):/.exec(sessionKey);
+  const agentId = match?.[1];
+  if (!agentId) return undefined;
+  try {
+    const sessionStorePath = path.join(
+      process.env.OPENCLAW_STATE_DIR || path.join(process.env.HOME || "", ".openclaw"),
+      "agents",
+      agentId,
+      "sessions",
+      "sessions.json",
+    );
+    const store = JSON.parse(fs.readFileSync(sessionStorePath, "utf-8"));
+    return store?.[sessionKey]?.deliveryContext;
+  } catch {
+    return undefined;
+  }
+}
 
 export type MeshConfig = {
   enabled?: boolean;
@@ -123,8 +147,57 @@ const meshPlugin = {
       ttlMs: config.notificationSessionTtlMs ?? DEFAULT_NOTIFICATION_SESSION_TTL_MS,
       logger,
     });
+    const getNotificationTarget = (): MeshSessionTarget | null => {
+      if (currentSessionKey) {
+        const persisted = sessionTargets.getCurrent();
+        const deliveryContext = persisted?.sessionKey === currentSessionKey
+          ? persisted.deliveryContext ?? readSessionDeliveryContext(currentSessionKey)
+          : readSessionDeliveryContext(currentSessionKey);
+        return {
+          sessionKey: currentSessionKey,
+          updatedAt: Date.now(),
+          source: "memory",
+          deliveryContext,
+        };
+      }
+      const persisted = sessionTargets.getCurrent();
+      if (!persisted) return null;
+      return {
+        ...persisted,
+        deliveryContext: persisted.deliveryContext ?? readSessionDeliveryContext(persisted.sessionKey),
+      };
+    };
+    const injectDashboardChatMessage = async (request: {
+      sessionKey: string;
+      message: string;
+      label?: string;
+      idempotencyKey?: string;
+    }): Promise<boolean> => {
+      const params = {
+        sessionKey: request.sessionKey,
+        message: request.message,
+        ...(request.label ? { label: request.label } : {}),
+      };
+      const { stdout } = await execFileAsync("openclaw", [
+        "gateway",
+        "call",
+        "chat.inject",
+        "--json",
+        "--timeout",
+        "10000",
+        "--params",
+        JSON.stringify(params),
+      ], {
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      const parsed = JSON.parse(stdout);
+      return parsed?.ok === true;
+    };
     const urgentNotifications = createUrgentNotificationScheduler({
-      getSessionKey: () => currentSessionKey ?? sessionTargets.getCurrent()?.sessionKey ?? null,
+      getSessionKey: () => getNotificationTarget()?.sessionKey ?? null,
+      getSessionTarget: getNotificationTarget,
+      injectChatMessage: injectDashboardChatMessage,
       enqueueSystemEvent: api.runtime?.system?.enqueueSystemEvent,
       requestHeartbeat: api.runtime?.system?.requestHeartbeat,
       runHeartbeatOnce: api.runtime?.system?.runHeartbeatOnce,

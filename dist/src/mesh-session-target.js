@@ -48,11 +48,12 @@ export function createMeshSessionTargetStore(options = {}) {
         remember(sessionKey, source, deliveryContext) {
             if (!sessionKey)
                 return null;
+            const previous = cached?.sessionKey === sessionKey ? cached : readFromDisk();
             const target = {
                 sessionKey,
                 source,
                 updatedAt: now(),
-                deliveryContext,
+                deliveryContext: deliveryContext ?? (previous?.sessionKey === sessionKey ? previous.deliveryContext : undefined),
             };
             cached = target;
             try {

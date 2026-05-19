@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS,
   createUrgentNotificationScheduler,
+  formatUrgentMeshChatMessage,
   formatUrgentMeshSystemEvent,
   isUrgentMeshEvent,
 } from "../dist/src/urgent-notifications.js";
@@ -111,6 +112,39 @@ const formattedMismatch = formatUrgentMeshSystemEvent({
 });
 assert.match(formattedMismatch, /possible impersonation/i);
 
+const chatMessage = formatUrgentMeshChatMessage(pendingEvent);
+assert.match(chatMessage, /Mesh approval needed/);
+assert.match(chatMessage, /node-a/);
+assert.match(chatMessage, /192\.168\.29\.10/);
+
+const injectedMessages = [];
+const webchatSystemEvents = [];
+const webchatHeartbeats = [];
+const webchatScheduler = createUrgentNotificationScheduler({
+  getSessionKey: () => "session-webchat",
+  getSessionTarget: () => ({
+    sessionKey: "session-webchat",
+    deliveryContext: { channel: "webchat" },
+  }),
+  injectChatMessage: async (request) => {
+    injectedMessages.push(request);
+    return true;
+  },
+  enqueueSystemEvent: (text, options) => {
+    webchatSystemEvents.push({ text, options });
+    return true;
+  },
+  requestHeartbeat: (request) => webchatHeartbeats.push(request),
+  now: () => now + (DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS * 2),
+});
+assert.equal(await webchatScheduler.schedule({ ...pendingEvent, id: "evt-webchat" }), true);
+assert.equal(injectedMessages.length, 1);
+assert.equal(injectedMessages[0].sessionKey, "session-webchat");
+assert.equal(injectedMessages[0].label, "Mesh");
+assert.match(injectedMessages[0].message, /approve or deny/);
+assert.equal(webchatSystemEvents.length, 0);
+assert.equal(webchatHeartbeats.length, 0);
+
 const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mesh-session-"));
 try {
   const sessionStore = createMeshSessionTargetStore({
@@ -119,6 +153,8 @@ try {
     now: () => 5000,
   });
   sessionStore.remember("session-persisted", "test", { channel: "webchat" });
+  sessionStore.remember("session-persisted", "agent-event");
+  assert.deepEqual(sessionStore.getCurrent()?.deliveryContext, { channel: "webchat" });
   const reloaded = createMeshSessionTargetStore({
     baseDir: tempDir,
     ttlMs: 1000,

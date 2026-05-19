@@ -16,11 +16,23 @@ export type SystemEventOptions = {
     contextKey?: string | null;
     trusted?: boolean;
 };
+export type UrgentNotificationTarget = {
+    sessionKey: string;
+    deliveryContext?: unknown;
+};
+export type ChatInjectionRequest = {
+    sessionKey: string;
+    message: string;
+    label?: string;
+    idempotencyKey?: string;
+};
 export type UrgentNotificationScheduler = {
     schedule: (event: MeshEventRecord) => Promise<boolean>;
 };
 export type UrgentNotificationSchedulerOptions = {
     getSessionKey: () => string | null;
+    getSessionTarget?: () => UrgentNotificationTarget | null;
+    injectChatMessage?: (request: ChatInjectionRequest) => Promise<boolean>;
     enqueueSystemEvent?: (text: string, options: SystemEventOptions) => boolean;
     requestHeartbeat?: (request: HeartbeatWakeRequest) => void;
     runHeartbeatOnce?: (request: {
@@ -39,4 +51,5 @@ export type UrgentNotificationSchedulerOptions = {
 };
 export declare function isUrgentMeshEvent(kind: MeshEventKind): boolean;
 export declare function formatUrgentMeshSystemEvent(event: MeshEventRecord): string;
+export declare function formatUrgentMeshChatMessage(event: MeshEventRecord): string;
 export declare function createUrgentNotificationScheduler(options: UrgentNotificationSchedulerOptions): UrgentNotificationScheduler;
