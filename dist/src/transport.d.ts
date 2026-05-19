@@ -63,6 +63,7 @@ export type FilePreview = {
 export type PendingExecution = {
     requestId: string;
     peerName: string;
+    direction: "incoming" | "outgoing";
     capability: string;
     instruction: string;
     from: string;
@@ -101,6 +102,8 @@ export type TransportService = {
     getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
     getInFlightSends: (peerName?: string) => InFlightSendRecord[];
     getPendingExecutions: (peerName?: string) => PendingExecution[];
+    sendCapabilityExecute: (peerName: string, capability: string, instruction: string, requestId?: string) => string | null;
+    respondToExecution: (requestId: string, result?: unknown, error?: string) => boolean;
     getPeerFingerprint: (peerName: string) => string | null;
     getPeerTrustWarning: (peerName: string) => string | null;
     setNodeInfoProvider: (provider: () => NodeInfo) => void;

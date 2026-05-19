@@ -10,6 +10,7 @@ export const URGENT_MESH_EVENT_KINDS = new Set([
     "file_received",
     "discovery_warning",
     "capability_execute_requested",
+    "capability_execute_completed",
 ]);
 export function isUrgentMeshEvent(kind) {
     return URGENT_MESH_EVENT_KINDS.has(kind);
@@ -76,6 +77,14 @@ export function formatUrgentMeshSystemEvent(event) {
         const requestLabel = requestId ? ` Request ID: ${requestId}.` : "";
         return `[mesh] Remote capability execution requested by peer${peerLabel}: ${capability}.${requestLabel} Tell the user immediately and ask whether/how to handle it. Do not execute anything without the user's decision.`;
     }
+    if (event.kind === "capability_execute_completed") {
+        const capability = asString(event.details?.capability) ?? "unknown capability";
+        const requestId = asString(event.details?.requestId);
+        const error = asString(event.details?.error);
+        const requestLabel = requestId ? ` Request ID: ${requestId}.` : "";
+        const status = error ? `failed or was denied: ${error}` : "completed successfully";
+        return `[mesh] Capability execution ${status} for peer${peerLabel}: ${capability}.${requestLabel} Tell the user immediately.`;
+    }
     return `[mesh] Urgent mesh event: ${event.message} Tell the user immediately in plain language.`;
 }
 export function formatUrgentMeshChatMessage(event) {
@@ -141,6 +150,22 @@ export function formatUrgentMeshChatMessage(event) {
             instruction ? `Instruction: ${instruction}` : null,
             "",
             "Tell the user and do not execute it without their decision.",
+        ].filter((line) => line !== null).join("\n");
+    }
+    if (event.kind === "capability_execute_completed") {
+        const capability = asString(event.details?.capability) ?? "unknown capability";
+        const requestId = asString(event.details?.requestId);
+        const result = asString(event.details?.result);
+        const error = asString(event.details?.error);
+        return [
+            error ? "**Capability execution failed**" : "**Capability execution completed**",
+            "",
+            `Peer \`${peer}\` ${error ? "returned an error" : "returned a result"} for \`${capability}\`.`,
+            requestId ? `Request ID: \`${requestId}\`` : null,
+            error ? "" : null,
+            error ? `Error: ${error}` : null,
+            result ? "" : null,
+            result ? `Result: ${result}` : null,
         ].filter((line) => line !== null).join("\n");
     }
     return `**Urgent mesh event**\n\n${event.message}`;

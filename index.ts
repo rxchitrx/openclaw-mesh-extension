@@ -12,6 +12,7 @@ import { resolveInsideRoot } from "./src/path-safety.js";
 import { createMeshAdvertiseTool } from "./src/tools/advertise.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
+import { createMeshCapabilityRespondTool } from "./src/tools/capability-respond.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
 import { createMeshEventsTool } from "./src/tools/events.js";
@@ -478,6 +479,7 @@ const meshPlugin = {
     registerMeshTool("mesh_discover", (ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx));
     registerMeshTool("mesh_status", (ctx: any) => createMeshStatusTool({ discovery, transport, syncState, getTrackState, capabilityRegistry }, ctx));
     registerMeshTool("mesh_advertise", (ctx: any) => createMeshAdvertiseTool({ capabilityRegistry, transport }, ctx));
+    registerMeshTool("mesh_capability_respond", (ctx: any) => createMeshCapabilityRespondTool(transport, ctx));
     registerMeshTool("mesh_broadcast", (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_sync", (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_track", (ctx: any) => createMeshTrackTool(getTrackState, ctx));

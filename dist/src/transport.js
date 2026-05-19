@@ -48,6 +48,7 @@ export function createTransport(config) {
     const publicPendingExecution = (execution) => ({
         requestId: execution.requestId,
         peerName: execution.peerName,
+        direction: execution.direction,
         capability: execution.capability,
         instruction: execution.instruction,
         from: execution.from,
@@ -742,6 +743,7 @@ export function createTransport(config) {
                         storePendingExecution({
                             requestId,
                             peerName,
+                            direction: "incoming",
                             capability: request.capability,
                             instruction: request.instruction,
                             from: request.from,
@@ -1223,6 +1225,50 @@ export function createTransport(config) {
         getPendingExecutions(peerName) {
             const records = [...pendingExecutions.values()].map(publicPendingExecution);
             return peerName ? records.filter((record) => record.peerName === peerName) : records;
+        },
+        sendCapabilityExecute(peerName, capability, instruction, requestId) {
+            const conn = connections.get(peerName);
+            if (!conn?.approved || conn.socket.readyState !== 1) {
+                logger.warn(`Cannot send capability execution to '${peerName}': peer is not connected and approved.`);
+                return null;
+            }
+            const executionRequestId = requestId || createExecutionRequestId();
+            storePendingExecution({
+                requestId: executionRequestId,
+                peerName,
+                direction: "outgoing",
+                capability,
+                instruction,
+                from: nodeName,
+            });
+            sendToPeer(peerName, {
+                type: "capability_execute",
+                requestId: executionRequestId,
+                capability,
+                instruction,
+                from: nodeName,
+            });
+            return executionRequestId;
+        },
+        respondToExecution(requestId, result, error) {
+            const execution = pendingExecutions.get(requestId);
+            if (!execution || execution.direction !== "incoming") {
+                logger.warn(`Cannot respond to capability execution '${requestId}': no incoming pending execution found.`);
+                return false;
+            }
+            const conn = connections.get(execution.peerName);
+            if (!conn?.approved || conn.socket.readyState !== 1) {
+                logger.warn(`Cannot respond to capability execution '${requestId}': peer '${execution.peerName}' is not connected and approved.`);
+                return false;
+            }
+            sendToPeer(execution.peerName, {
+                type: "capability_execute_result",
+                requestId,
+                result,
+                error,
+                from: nodeName,
+            });
+            return completePendingExecution(requestId, { result, error, from: nodeName });
         },
         getPeerFingerprint(peerName) {
             return connections.get(peerName)?.fingerprint || pendingConnections.get(peerName)?.fingerprint || null;

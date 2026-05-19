@@ -7,6 +7,7 @@ const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mesh-capability-execut
 process.env.HOME = tempHome;
 
 const { createTransport } = await import("../dist/src/transport.js");
+const { createMeshCapabilityRespondTool } = await import("../dist/src/tools/capability-respond.js");
 
 const basePort = 25000 + Math.floor(Math.random() * 1000);
 
@@ -84,55 +85,87 @@ try {
   await waitFor(() => third.getConnections().includes("node-b"), "third connected");
   await waitFor(() => right.getConnections().includes("node-c"), "right connected to third");
 
-  left.sendToPeer("node-b", {
-    type: "capability_execute",
-    requestId: "exec-test-1",
-    capability: "can:run-tests",
-    instruction: "Run npm test",
-    from: "node-a",
-  });
+  assert.equal(left.sendCapabilityExecute("node-b", "can:run-tests", "Run npm test", "exec-success"), "exec-success");
 
   await waitFor(
-    () => right.getPendingExecutions().some((execution) => execution.requestId === "exec-test-1"),
+    () => right.getPendingExecutions().some((execution) => execution.requestId === "exec-success"),
     "pending execution with preserved requestId",
   );
   const pending = right.getPendingExecutions("node-a");
   assert.equal(pending.length, 1);
-  assert.equal(pending[0].requestId, "exec-test-1");
+  assert.equal(pending[0].requestId, "exec-success");
+  assert.equal(pending[0].direction, "incoming");
   assert.equal(pending[0].capability, "can:run-tests");
   assert.equal(pending[0].instruction, "Run npm test");
   assert.equal(pending[0].from, "node-a");
+  assert.equal(left.getPendingExecutions("node-b").some((execution) => execution.requestId === "exec-success" && execution.direction === "outgoing"), true);
 
   await waitFor(
-    () => rightNotifications.some((event) => event.type === "capability_execute_requested" && event.data?.requestId === "exec-test-1"),
+    () => rightNotifications.some((event) => event.type === "capability_execute_requested" && event.data?.requestId === "exec-success"),
     "capability execution request notification",
   );
 
   third.sendToPeer("node-b", {
     type: "capability_execute_result",
-    requestId: "exec-test-1",
+    requestId: "exec-success",
     result: "spoofed",
     from: "node-c",
   });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(right.getPendingExecutions().some((execution) => execution.requestId === "exec-test-1"), true);
+  assert.equal(right.getPendingExecutions().some((execution) => execution.requestId === "exec-success"), true);
 
-  left.sendToPeer("node-b", {
-    type: "capability_execute",
-    capability: "can:lint",
-    instruction: "Lint the project",
-    from: "node-a",
-  });
+  const rightRespondTool = createMeshCapabilityRespondTool(right, {});
+  const successResponse = await rightRespondTool.execute("respond-1", {
+    requestId: "exec-success",
+    result: "tests passed",
+  }, undefined, undefined);
+  assert.equal(successResponse.details.ok, true);
+
+  await waitFor(
+    () => leftNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-success" && event.data?.result === "tests passed" && !event.data?.error),
+    "requester success completion notification",
+  );
+  await waitFor(
+    () => rightNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-success" && event.data?.result === "tests passed" && !event.data?.error),
+    "executor success completion notification",
+  );
+  assert.equal(left.getPendingExecutions().some((execution) => execution.requestId === "exec-success"), false);
+  assert.equal(right.getPendingExecutions().some((execution) => execution.requestId === "exec-success"), false);
+
+  assert.equal(left.sendCapabilityExecute("node-b", "can:deploy", "Deploy the app", "exec-denied"), "exec-denied");
+  await waitFor(
+    () => right.getPendingExecutions().some((execution) => execution.requestId === "exec-denied"),
+    "pending execution for denial",
+  );
+  const denialResponse = await rightRespondTool.execute("respond-2", {
+    requestId: "exec-denied",
+    error: "denied by user",
+  }, undefined, undefined);
+  assert.equal(denialResponse.details.ok, true);
+  await waitFor(
+    () => leftNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-denied" && event.data?.error === "denied by user"),
+    "requester denial completion notification",
+  );
+  await waitFor(
+    () => rightNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-denied" && event.data?.error === "denied by user"),
+    "executor denial completion notification",
+  );
+
+  assert.notEqual(left.sendCapabilityExecute("node-b", "can:lint", "Lint the project"), null);
   await waitFor(
     () => right.getPendingExecutions().some((execution) => execution.capability === "can:lint" && execution.requestId.startsWith("exec-")),
     "generated requestId for capability execution",
   );
 
   await waitFor(
-    () => rightNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-test-1" && event.data?.error === "timeout"),
-    "timeout completion notification",
+    () => rightNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.capability === "can:lint" && event.data?.error === "timeout"),
+    "executor timeout completion notification",
   );
-  assert.equal(right.getPendingExecutions().some((execution) => execution.requestId === "exec-test-1"), false);
+  await waitFor(
+    () => leftNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.capability === "can:lint" && event.data?.error === "timeout"),
+    "requester timeout completion notification",
+  );
+  assert.equal(right.getPendingExecutions().some((execution) => execution.capability === "can:lint"), false);
 } finally {
   await left.stop();
   await right.stop();

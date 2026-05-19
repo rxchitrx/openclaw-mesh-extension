@@ -103,6 +103,7 @@ export type FilePreview = {
 export type PendingExecution = {
   requestId: string;
   peerName: string;
+  direction: "incoming" | "outgoing";
   capability: string;
   instruction: string;
   from: string;
@@ -163,6 +164,8 @@ export type TransportService = {
   getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
   getInFlightSends: (peerName?: string) => InFlightSendRecord[];
   getPendingExecutions: (peerName?: string) => PendingExecution[];
+  sendCapabilityExecute: (peerName: string, capability: string, instruction: string, requestId?: string) => string | null;
+  respondToExecution: (requestId: string, result?: unknown, error?: string) => boolean;
   getPeerFingerprint: (peerName: string) => string | null;
   getPeerTrustWarning: (peerName: string) => string | null;
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
@@ -227,6 +230,7 @@ export function createTransport(config: TransportConfig): TransportService {
   const publicPendingExecution = (execution: PendingExecution): PendingExecution => ({
     requestId: execution.requestId,
     peerName: execution.peerName,
+    direction: execution.direction,
     capability: execution.capability,
     instruction: execution.instruction,
     from: execution.from,
@@ -268,6 +272,7 @@ export function createTransport(config: TransportConfig): TransportService {
   const storePendingExecution = (input: {
     requestId: string;
     peerName: string;
+    direction: "incoming" | "outgoing";
     capability: string;
     instruction: string;
     from: string;
@@ -939,6 +944,7 @@ export function createTransport(config: TransportConfig): TransportService {
             storePendingExecution({
               requestId,
               peerName,
+              direction: "incoming",
               capability: request.capability,
               instruction: request.instruction,
               from: request.from,
@@ -1472,6 +1478,52 @@ export function createTransport(config: TransportConfig): TransportService {
     getPendingExecutions(peerName?: string): PendingExecution[] {
       const records = [...pendingExecutions.values()].map(publicPendingExecution);
       return peerName ? records.filter((record) => record.peerName === peerName) : records;
+    },
+
+    sendCapabilityExecute(peerName: string, capability: string, instruction: string, requestId?: string): string | null {
+      const conn = connections.get(peerName);
+      if (!conn?.approved || conn.socket.readyState !== 1) {
+        logger.warn(`Cannot send capability execution to '${peerName}': peer is not connected and approved.`);
+        return null;
+      }
+      const executionRequestId = requestId || createExecutionRequestId();
+      storePendingExecution({
+        requestId: executionRequestId,
+        peerName,
+        direction: "outgoing",
+        capability,
+        instruction,
+        from: nodeName,
+      });
+      sendToPeer(peerName, {
+        type: "capability_execute",
+        requestId: executionRequestId,
+        capability,
+        instruction,
+        from: nodeName,
+      });
+      return executionRequestId;
+    },
+
+    respondToExecution(requestId: string, result?: unknown, error?: string): boolean {
+      const execution = pendingExecutions.get(requestId);
+      if (!execution || execution.direction !== "incoming") {
+        logger.warn(`Cannot respond to capability execution '${requestId}': no incoming pending execution found.`);
+        return false;
+      }
+      const conn = connections.get(execution.peerName);
+      if (!conn?.approved || conn.socket.readyState !== 1) {
+        logger.warn(`Cannot respond to capability execution '${requestId}': peer '${execution.peerName}' is not connected and approved.`);
+        return false;
+      }
+      sendToPeer(execution.peerName, {
+        type: "capability_execute_result",
+        requestId,
+        result,
+        error,
+        from: nodeName,
+      });
+      return completePendingExecution(requestId, { result, error, from: nodeName });
     },
 
     getPeerFingerprint(peerName: string): string | null {
