@@ -49,6 +49,16 @@ function getLocalIPv4s() {
     }
     return nonInternal;
 }
+export function getLocalIPv4Addresses() {
+    return getLocalIPv4s().map((iface) => iface.address);
+}
+export function normalizePeerHost(host) {
+    return host.startsWith("::ffff:") ? host.slice("::ffff:".length) : host;
+}
+export function isLocalIPv4Address(host) {
+    const normalized = normalizePeerHost(host);
+    return normalized === "127.0.0.1" || getLocalIPv4Addresses().includes(normalized);
+}
 function getLocalIP() {
     const localIPv4s = getLocalIPv4s();
     const preferred = localIPv4s.find(({ name, address }) => isPreferredLanInterface(name) && isPrivateIPv4(address));
@@ -103,12 +113,12 @@ function probePing(ip) {
         execFile("ping", args, { timeout: PING_TIMEOUT_MS }, (err) => resolve(!err));
     });
 }
-async function scanSubnet(subnet, port, localIP) {
+async function scanSubnet(subnet, port, localIPs) {
     const results = [];
     const queue = [];
     for (let i = 1; i <= 254; i++) {
         const ip = `${subnet}.${i}`;
-        if (ip !== localIP)
+        if (!localIPs.has(ip))
             queue.push(ip);
     }
     const workers = Array.from({ length: MAX_SCAN_CONCURRENCY }, async () => {
@@ -117,7 +127,7 @@ async function scanSubnet(subnet, port, localIP) {
             if (!ip)
                 continue;
             const [portOpen, pingOk] = await Promise.all([probePort(ip, port), probePing(ip)]);
-            if (portOpen || pingOk)
+            if (portOpen)
                 results.push({ ip, portOpen, pingOk });
         }
     });
@@ -206,13 +216,14 @@ export function createDiscovery(config) {
                 catch { }
             }
             const scanTargets = getScanTargets();
+            const localIPs = new Set(getLocalIPv4Addresses());
             if (scanTargets.length > 0) {
                 const localSummary = scanTargets.map(({ subnet, ip }) => `${ip} -> ${subnet}.0/24`).join(", ");
                 logger.info(`Scanning local subnets for mesh nodes on port ${SCAN_PORT}: ${localSummary}`);
                 try {
                     let totalFound = 0;
                     for (const target of scanTargets) {
-                        const found = await scanSubnet(target.subnet, SCAN_PORT, target.ip);
+                        const found = await scanSubnet(target.subnet, SCAN_PORT, localIPs);
                         totalFound += found.length;
                         for (const entry of found) {
                             const { ip, portOpen, pingOk } = entry;
@@ -264,14 +275,15 @@ export function createDiscovery(config) {
             return { name: nodeName, host: getLocalIP(), port };
         },
         notePeer(peer) {
-            if (!peer.name || peer.name === nodeName || !peer.host)
+            const normalizedHost = normalizePeerHost(peer.host || "");
+            if (!peer.name || peer.name === nodeName || !normalizedHost || isLocalIPv4Address(normalizedHost))
                 return;
             const existing = peers.get(peer.name);
             const peerPort = peer.port || port;
             const now = Date.now();
             const source = peer.source || "transport";
             if (existing) {
-                existing.host = peer.host;
+                existing.host = normalizedHost;
                 existing.port = peerPort;
                 existing.lastSeen = now;
                 existing.source = source;
@@ -285,7 +297,7 @@ export function createDiscovery(config) {
             }
             peers.set(peer.name, {
                 name: peer.name,
-                host: peer.host,
+                host: normalizedHost,
                 port: peerPort,
                 lastSeen: now,
                 source,

@@ -1,3 +1,4 @@
+import { isLocalIPv4Address, normalizePeerHost } from "./discovery.js";
 import { normalizeRelativePath } from "./path-safety.js";
 import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
 import { checkTrustedPeer, createNonce, decodePublicKeyFromWire, encodePublicKeyForWire, loadOrCreateIdentity, signIdentityChallenge, touchTrustedPeer, trustPeer, verifyIdentityProof, } from "./peer-identity.js";
@@ -749,8 +750,13 @@ export function createTransport(config) {
                 server = new WebSocketServer({ port });
                 server.on("connection", (socket, req) => {
                     const peerName = req.headers["x-mesh-node"] || "unknown";
-                    const host = req.socket.remoteAddress || "unknown";
+                    const host = normalizePeerHost(req.socket.remoteAddress || "unknown");
                     logger.info(`Incoming connection from: ${peerName} at ${host}`);
+                    if (peerName === nodeName) {
+                        logger.warn(`Rejecting self mesh connection from ${peerName} at ${host}`);
+                        socket.close();
+                        return;
+                    }
                     const alreadyConnected = connections.has(peerName);
                     if (alreadyConnected) {
                         const old = connections.get(peerName);
@@ -825,13 +831,18 @@ export function createTransport(config) {
             }
         },
         async connectToPeer(peer) {
+            const normalizedHost = normalizePeerHost(peer.host);
+            if (peer.name === nodeName || (isLocalIPv4Address(normalizedHost) && peer.port === port)) {
+                logger.warn(`Refusing to connect mesh node to itself: ${peer.name} at ${peer.host}:${peer.port}`);
+                return false;
+            }
             if (connections.has(peer.name))
                 return true;
             if (pendingConnections.has(peer.name))
                 return true;
             try {
                 const wsModule = await import("ws");
-                const ws = new wsModule.default(`ws://${peer.host}:${peer.port}`, {
+                const ws = new wsModule.default(`ws://${normalizedHost}:${peer.port}`, {
                     headers: {
                         "x-mesh-node": nodeName,
                         "x-mesh-fingerprint": identity.fingerprint,
@@ -843,7 +854,7 @@ export function createTransport(config) {
                         const pending = {
                             peerName: peer.name,
                             socket: ws,
-                            host: peer.host,
+                            host: normalizedHost,
                             connectedAt: Date.now(),
                             direction: "outgoing",
                             identityVerified: false,
@@ -851,7 +862,7 @@ export function createTransport(config) {
                         pendingConnections.set(peer.name, pending);
                         setupSocket(ws, peer.name, false);
                         sendIdentityChallenge(peer.name, ws);
-                        logger.info(`Connected to peer (awaiting identity proof): ${peer.name} at ${peer.host}:${peer.port}`);
+                        logger.info(`Connected to peer (awaiting identity proof): ${peer.name} at ${normalizedHost}:${peer.port}`);
                         resolve();
                     });
                     ws.on("error", (err) => {

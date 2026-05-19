@@ -1,5 +1,5 @@
 import type { SyncStateService } from "./sync-state.js";
-import type { PeerInfo } from "./discovery.js";
+import { type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 export type TransportConfig = {
     nodeName: string;

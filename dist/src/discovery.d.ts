@@ -31,4 +31,7 @@ export type DiscoveryService = {
         source?: "mdns" | "transport" | "subnet-scan";
     }) => void;
 };
+export declare function getLocalIPv4Addresses(): string[];
+export declare function normalizePeerHost(host: string): string;
+export declare function isLocalIPv4Address(host: string): boolean;
 export declare function createDiscovery(config: DiscoveryConfig): DiscoveryService;

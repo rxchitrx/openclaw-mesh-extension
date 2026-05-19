@@ -17,6 +17,8 @@ import { createMeshStatusTool } from "./src/tools/status.js";
 import { createMeshSyncTool } from "./src/tools/sync.js";
 import { createMeshTrackTool } from "./src/tools/track.js";
 import { createTransport } from "./src/transport.js";
+import { DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS, createUrgentNotificationScheduler, } from "./src/urgent-notifications.js";
+import { DEFAULT_NOTIFICATION_SESSION_TTL_MS, createMeshSessionTargetStore, } from "./src/mesh-session-target.js";
 function mapTransportEventKind(type) {
     switch (type) {
         case "peer_pending":
@@ -67,6 +69,8 @@ const meshPlugin = {
             nodeName: { type: "string" },
             port: { type: "number", default: 18790 },
             trackDir: { type: "string" },
+            urgentNotifyCooldownMs: { type: "number", default: DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS },
+            notificationSessionTtlMs: { type: "number", default: DEFAULT_NOTIFICATION_SESSION_TTL_MS },
         },
     },
     register(api) {
@@ -86,6 +90,18 @@ const meshPlugin = {
         const syncState = createSyncState({ nodeName, logger });
         const transport = createTransport({ nodeName, port, syncState, logger });
         const eventStore = createMeshEventStore();
+        const sessionTargets = createMeshSessionTargetStore({
+            ttlMs: config.notificationSessionTtlMs ?? DEFAULT_NOTIFICATION_SESSION_TTL_MS,
+            logger,
+        });
+        const urgentNotifications = createUrgentNotificationScheduler({
+            getSessionKey: () => currentSessionKey ?? sessionTargets.getCurrent()?.sessionKey ?? null,
+            enqueueSystemEvent: api.runtime?.system?.enqueueSystemEvent,
+            requestHeartbeat: api.runtime?.system?.requestHeartbeat,
+            runHeartbeatOnce: api.runtime?.system?.runHeartbeatOnce,
+            cooldownMs: config.urgentNotifyCooldownMs ?? DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS,
+            logger,
+        });
         let fileWatcher = null;
         const getTrackState = () => ({
             fileWatcher,
@@ -94,7 +110,7 @@ const meshPlugin = {
             stopFileWatcher,
         });
         const tryInjectDigest = async (force = false) => {
-            const targetSessionKey = currentSessionKey;
+            const targetSessionKey = currentSessionKey ?? sessionTargets.getCurrent()?.sessionKey ?? null;
             if (!targetSessionKey || !api.enqueueNextTurnInjection) {
                 return null;
             }
@@ -134,7 +150,7 @@ const meshPlugin = {
             registeredSessionJobs.add(sessionKey);
         };
         const enqueueEvent = (kind, message, options) => {
-            eventStore.addEvent({
+            const record = eventStore.addEvent({
                 kind,
                 message,
                 peerName: options?.peerName,
@@ -142,7 +158,73 @@ const meshPlugin = {
                 details: options?.details,
                 expiresAt: options?.expiresAt,
             });
-            void tryInjectDigest(false);
+            void urgentNotifications.schedule(record).then(async (delivered) => {
+                if (delivered) {
+                    eventStore.markDelivered([record.id], Date.now());
+                    return;
+                }
+                await tryInjectDigest(false);
+            });
+        };
+        const rememberSession = (ctx, source = "tool") => {
+            if (typeof ctx?.sessionKey !== "string" || ctx.sessionKey.length === 0) {
+                return;
+            }
+            currentSessionKey = ctx.sessionKey;
+            sessionTargets.remember(ctx.sessionKey, source, ctx.deliveryContext);
+            registerSessionJob(ctx.sessionKey);
+        };
+        const registerMeshTool = (name, factory) => {
+            api.registerTool((ctx) => {
+                rememberSession(ctx, `tool:${name}`);
+                const tool = factory(ctx);
+                if (!tool?.execute) {
+                    return tool;
+                }
+                return {
+                    ...tool,
+                    execute: async (...args) => {
+                        rememberSession(ctx, `tool:${name}:execute`);
+                        const result = await tool.execute(...args);
+                        if (name === "mesh_discover") {
+                            void surfaceToolResult("mesh_discover", result);
+                        }
+                        return result;
+                    },
+                };
+            }, { name });
+        };
+        const extractToolText = (result) => {
+            const content = Array.isArray(result?.content) ? result.content : [];
+            const text = content
+                .map((block) => typeof block?.text === "string" ? block.text : "")
+                .filter(Boolean)
+                .join("\n")
+                .trim();
+            return text.length > 0 ? text.slice(0, 6000) : null;
+        };
+        const surfaceToolResult = async (toolName, result) => {
+            const targetSessionKey = currentSessionKey;
+            const text = extractToolText(result);
+            if (!targetSessionKey || !text || !api.enqueueNextTurnInjection) {
+                return;
+            }
+            try {
+                await api.enqueueNextTurnInjection({
+                    sessionKey: targetSessionKey,
+                    placement: "append_context",
+                    ttlMs: 120000,
+                    text: `[mesh] The user just ran ${toolName}. You MUST summarize the important result to the user in plain language now. Do not leave only the tool card visible.\n\n${text}`,
+                });
+                await api.runtime?.system?.runHeartbeatOnce?.({
+                    reason: "mesh-tool-result-summary",
+                    sessionKey: targetSessionKey,
+                    heartbeat: { target: "last" },
+                });
+            }
+            catch (err) {
+                logger.warn(`Could not surface ${toolName} result: ${err}`);
+            }
         };
         const startFileWatcher = async (dir) => {
             if (fileWatcher) {
@@ -242,24 +324,23 @@ const meshPlugin = {
                         return;
                     }
                     currentSessionKey = event.sessionKey;
+                    sessionTargets.remember(event.sessionKey, "agent-event", event.deliveryContext);
                     registerSessionJob(event.sessionKey);
                     void tryInjectDigest(true);
                 },
             });
         }
-        api.registerTool((ctx) => createMeshDiscoverTool({ discovery, transport }, ctx), { name: "mesh_discover" });
-        api.registerTool((ctx) => createMeshStatusTool({ discovery, transport, syncState, getTrackState }, ctx), { name: "mesh_status" });
-        api.registerTool((ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx), { name: "mesh_broadcast" });
-        api.registerTool((ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx), { name: "mesh_sync" });
-        api.registerTool((ctx) => createMeshTrackTool(getTrackState, ctx), { name: "mesh_track" });
-        api.registerTool((ctx) => createMeshApproveTool(transport, ctx), { name: "mesh_approve" });
-        api.registerTool((ctx) => createMeshRejectTool(transport, ctx), { name: "mesh_reject" });
-        api.registerTool((ctx) => createMeshConnectionsTool({ transport, eventStore }, ctx), {
-            name: "mesh_connections",
-        });
-        api.registerTool((ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx), { name: "mesh_diff" });
-        api.registerTool((ctx) => createMeshEventsTool(eventStore, ctx), { name: "mesh_events" });
-        api.registerTool((ctx) => createMeshAckTool(eventStore, ctx), { name: "mesh_ack" });
+        registerMeshTool("mesh_discover", (ctx) => createMeshDiscoverTool({ discovery, transport }, ctx));
+        registerMeshTool("mesh_status", (ctx) => createMeshStatusTool({ discovery, transport, syncState, getTrackState }, ctx));
+        registerMeshTool("mesh_broadcast", (ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
+        registerMeshTool("mesh_sync", (ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
+        registerMeshTool("mesh_track", (ctx) => createMeshTrackTool(getTrackState, ctx));
+        registerMeshTool("mesh_approve", (ctx) => createMeshApproveTool(transport, ctx));
+        registerMeshTool("mesh_reject", (ctx) => createMeshRejectTool(transport, ctx));
+        registerMeshTool("mesh_connections", (ctx) => createMeshConnectionsTool({ transport, eventStore }, ctx));
+        registerMeshTool("mesh_diff", (ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx));
+        registerMeshTool("mesh_events", (ctx) => createMeshEventsTool(eventStore, ctx));
+        registerMeshTool("mesh_ack", (ctx) => createMeshAckTool(eventStore, ctx));
         api.on("gateway_start", async () => {
             try {
                 logger.info(`Starting mesh services... Node: ${nodeName}, Port: ${port}`);
