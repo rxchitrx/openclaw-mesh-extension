@@ -7,6 +7,7 @@ import { createSyncState, type SyncStateService } from "./src/sync-state.js";
 import { createDiscovery, type DiscoveryService } from "./src/discovery.js";
 import { createMeshEventStore, summarizeMeshEvents, type MeshEventKind, type MeshEventStore } from "./src/events.js";
 import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
+import { createCapabilityRegistry } from "./src/capability-registry.js";
 import { resolveInsideRoot } from "./src/path-safety.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
@@ -56,6 +57,8 @@ export type MeshConfig = {
   nodeName?: string;
   port?: number;
   trackDir?: string;
+  ignorePatterns?: string[];
+  capabilities?: string[];
   urgentNotifyCooldownMs?: number;
   notificationSessionTtlMs?: number;
 };
@@ -118,6 +121,16 @@ const meshPlugin = {
       nodeName: { type: "string" },
       port: { type: "number", default: 18790 },
       trackDir: { type: "string" },
+      ignorePatterns: {
+        type: "array",
+        items: { type: "string" },
+        default: [],
+      },
+      capabilities: {
+        type: "array",
+        items: { type: "string" },
+        default: [],
+      },
       urgentNotifyCooldownMs: { type: "number", default: DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS },
       notificationSessionTtlMs: { type: "number", default: DEFAULT_NOTIFICATION_SESSION_TTL_MS },
     },
@@ -141,6 +154,7 @@ const meshPlugin = {
 
     const discovery = createDiscovery({ nodeName, port, logger });
     const syncState = createSyncState({ nodeName, logger });
+    const capabilityRegistry = createCapabilityRegistry(config.capabilities ?? []);
     const transport = createTransport({ nodeName, port, syncState, logger });
     const eventStore = createMeshEventStore();
     const sessionTargets = createMeshSessionTargetStore({
@@ -350,7 +364,7 @@ const meshPlugin = {
         await fileWatcher.stop();
         fileWatcher = null;
       }
-      fileWatcher = createFileWatcher({ workspaceDir: dir, syncState, logger });
+      fileWatcher = createFileWatcher({ workspaceDir: dir, syncState, logger, ignorePatterns: config.ignorePatterns });
       fileWatcher.onFileDeleted = (relativePath: string) => {
         transport.notifyFileDeleted(relativePath);
         enqueueEvent("file_written", `Local tracked file '${relativePath}' was deleted and peers were notified.`, {
@@ -408,6 +422,7 @@ const meshPlugin = {
         trackingDir: currentTrackDir,
         trackingFileCount: manifest.length,
         trackingFiles: manifest.map((file) => file.relativePath),
+        capabilities: capabilityRegistry.list(),
       };
     });
 
@@ -456,7 +471,7 @@ const meshPlugin = {
     }
 
     registerMeshTool("mesh_discover", (ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx));
-    registerMeshTool("mesh_status", (ctx: any) => createMeshStatusTool({ discovery, transport, syncState, getTrackState }, ctx));
+    registerMeshTool("mesh_status", (ctx: any) => createMeshStatusTool({ discovery, transport, syncState, getTrackState, capabilityRegistry }, ctx));
     registerMeshTool("mesh_broadcast", (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_sync", (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_track", (ctx: any) => createMeshTrackTool(getTrackState, ctx));

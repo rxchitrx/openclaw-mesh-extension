@@ -1,9 +1,108 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+const DEFAULT_DIR = path.join(os.homedir(), ".openclaw", "mesh");
+function statePath(baseDir) {
+    return path.join(baseDir, "sync-state.json");
+}
+function ensureDir(dir) {
+    fs.mkdirSync(dir, { recursive: true });
+}
+function parseFileVersion(value) {
+    if (!value || typeof value !== "object")
+        return null;
+    const candidate = value;
+    if (typeof candidate.relativePath !== "string" || candidate.relativePath.length === 0)
+        return null;
+    if (typeof candidate.hash !== "string")
+        return null;
+    if (typeof candidate.version !== "number" || !Number.isFinite(candidate.version))
+        return null;
+    if (typeof candidate.lastModifiedBy !== "string")
+        return null;
+    if (typeof candidate.lastModifiedAt !== "number" || !Number.isFinite(candidate.lastModifiedAt))
+        return null;
+    if (typeof candidate.isBinary !== "boolean")
+        return null;
+    return {
+        relativePath: candidate.relativePath,
+        hash: candidate.hash,
+        version: candidate.version,
+        lastModifiedBy: candidate.lastModifiedBy,
+        lastModifiedAt: candidate.lastModifiedAt,
+        isBinary: candidate.isBinary,
+    };
+}
+function parsePendingChange(value) {
+    if (!value || typeof value !== "object")
+        return null;
+    const candidate = value;
+    if (typeof candidate.relativePath !== "string" || candidate.relativePath.length === 0)
+        return null;
+    if (typeof candidate.hash !== "string")
+        return null;
+    if (typeof candidate.isBinary !== "boolean")
+        return null;
+    if (typeof candidate.timestamp !== "number" || !Number.isFinite(candidate.timestamp))
+        return null;
+    return {
+        relativePath: candidate.relativePath,
+        hash: candidate.hash,
+        isBinary: candidate.isBinary,
+        timestamp: candidate.timestamp,
+    };
+}
+function loadPersistedSyncState(baseDir) {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(statePath(baseDir), "utf-8"));
+        if (!parsed || typeof parsed !== "object") {
+            return { fileVersions: [], lastSyncedHashes: [], pendingChanges: [] };
+        }
+        const candidate = parsed;
+        const fileVersions = Array.isArray(candidate.fileVersions)
+            ? candidate.fileVersions.map(parseFileVersion).filter((item) => Boolean(item))
+            : [];
+        const lastSyncedHashes = Array.isArray(candidate.lastSyncedHashes)
+            ? candidate.lastSyncedHashes.filter((item) => Array.isArray(item) && typeof item[0] === "string" && typeof item[1] === "string")
+            : [];
+        const pendingChanges = Array.isArray(candidate.pendingChanges)
+            ? candidate.pendingChanges.map(parsePendingChange).filter((item) => Boolean(item))
+            : [];
+        return { fileVersions, lastSyncedHashes, pendingChanges };
+    }
+    catch {
+        return { fileVersions: [], lastSyncedHashes: [], pendingChanges: [] };
+    }
+}
 export function createSyncState(config) {
     const { nodeName, logger } = config;
+    const baseDir = config.baseDir ?? DEFAULT_DIR;
     const fileVersions = new Map();
     const lastSyncedHashes = new Map();
     const pendingChanges = [];
     const forceAllowSet = new Set();
+    const persisted = loadPersistedSyncState(baseDir);
+    for (const version of persisted.fileVersions) {
+        fileVersions.set(version.relativePath, version);
+    }
+    for (const [relativePath, hash] of persisted.lastSyncedHashes) {
+        lastSyncedHashes.set(relativePath, hash);
+    }
+    pendingChanges.push(...persisted.pendingChanges);
+    const save = () => {
+        try {
+            ensureDir(baseDir);
+            const payload = {
+                fileVersions: Array.from(fileVersions.values()),
+                lastSyncedHashes: Array.from(lastSyncedHashes.entries()),
+                pendingChanges: [...pendingChanges],
+            };
+            fs.writeFileSync(statePath(baseDir), JSON.stringify(payload, null, 2), { mode: 0o600 });
+        }
+        catch (err) {
+            logger.warn?.(`Could not persist mesh sync state: ${err}`);
+        }
+    };
     return {
         recordLocalChange(relativePath, hash, isBinary) {
             const existing = fileVersions.get(relativePath);
@@ -25,6 +124,7 @@ export function createSyncState(config) {
                 pendingChanges.push(change);
             }
             logger.info(`Sync state: local change ${relativePath} v${version} (${hash.slice(0, 8)})`);
+            save();
         },
         recordRemoteChange(relativePath, hash, fromPeer, isBinary) {
             const existing = fileVersions.get(relativePath);
@@ -39,9 +139,11 @@ export function createSyncState(config) {
             });
             lastSyncedHashes.set(relativePath, hash);
             logger.info(`Sync state: remote change ${relativePath} v${version} from ${fromPeer} (${hash.slice(0, 8)})`);
+            save();
         },
         recordSyncedHash(relativePath, hash) {
             lastSyncedHashes.set(relativePath, hash);
+            save();
         },
         getVersion(relativePath) {
             return fileVersions.get(relativePath) || null;
@@ -79,6 +181,7 @@ export function createSyncState(config) {
         clearPendingChanges(relativePaths) {
             if (!relativePaths) {
                 pendingChanges.length = 0;
+                save();
                 return;
             }
             const set = new Set(relativePaths);
@@ -87,6 +190,7 @@ export function createSyncState(config) {
                     pendingChanges.splice(i, 1);
                 }
             }
+            save();
         },
         removeFile(relativePath) {
             fileVersions.delete(relativePath);
@@ -96,6 +200,7 @@ export function createSyncState(config) {
                     pendingChanges.splice(i, 1);
                 }
             }
+            save();
         },
         getFiles() {
             return Array.from(fileVersions.keys());
@@ -111,6 +216,7 @@ export function createSyncState(config) {
                 lastSyncedHashes.set(relativePath, version.hash);
             }
             logger.info(`Marked ${fileVersions.size} file(s) as synced`);
+            save();
         },
     };
 }

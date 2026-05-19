@@ -32,6 +32,7 @@ export type NodeInfo = {
     trackingDir: string | null;
     trackingFileCount: number;
     trackingFiles: string[];
+    capabilities: string[];
 };
 export type RemoteApplyRecord = {
     path: string;

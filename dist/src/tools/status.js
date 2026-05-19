@@ -20,6 +20,7 @@ export function createMeshStatusTool(services, _ctx) {
             const eventStats = services.eventStore?.getStats();
             const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
             const inFlight = transport.getInFlightSends();
+            const localCapabilities = services.capabilityRegistry?.list() ?? [];
             const now = new Date().toISOString();
             let message = `MESH STATUS\n`;
             message += `Timestamp: ${now}\n\n`;
@@ -33,7 +34,8 @@ export function createMeshStatusTool(services, _ctx) {
             message += `LOCAL NODE\n`;
             message += `  Name: ${localNode.name}\n`;
             message += `  Host: ${localNode.host}\n`;
-            message += `  Port: ${localNode.port}\n\n`;
+            message += `  Port: ${localNode.port}\n`;
+            message += `  Capabilities: ${localCapabilities.length > 0 ? localCapabilities.join(", ") : "none"}\n\n`;
             message += `NETWORK\n`;
             message += `  Discovered peers: ${peers.length}\n`;
             if (peers.length > 0) {
@@ -60,6 +62,7 @@ export function createMeshStatusTool(services, _ctx) {
                     if (info) {
                         const dirStr = info.trackingDir || "not tracking";
                         message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+                        message += ` | capabilities: ${info.capabilities.length > 0 ? info.capabilities.join(", ") : "none"}`;
                     }
                     message += manifest ? ` | manifest: ${manifest.length} files` : " | manifest: none";
                     const applied = transport.getRemoteAppliedFiles(name);
@@ -120,6 +123,7 @@ export function createMeshStatusTool(services, _ctx) {
                     ok: true,
                     status: {
                         localNode,
+                        localCapabilities,
                         trackDir: currentTrackDir,
                         peerCount: peers.length,
                         connectionCount: connections.length,

@@ -42,5 +42,11 @@ export type MeshEventStore = {
         lastAcknowledgedAt: number | null;
     };
 };
+export type MeshEventStoreOptions = {
+    baseDir?: string;
+    logger?: {
+        warn?: (message: string) => void;
+    };
+};
 export declare function summarizeMeshEvents(events: MeshEventRecord[]): string;
-export declare function createMeshEventStore(): MeshEventStore;
+export declare function createMeshEventStore(options?: MeshEventStoreOptions): MeshEventStore;

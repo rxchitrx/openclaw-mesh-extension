@@ -3,6 +3,7 @@ export type FileWatcherConfig = {
     workspaceDir: string;
     syncState: SyncStateService;
     logger: any;
+    ignorePatterns?: string[];
 };
 export type TrackedFile = {
     relativePath: string;

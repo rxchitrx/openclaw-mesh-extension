@@ -1,3 +1,7 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
 export type MeshEventKind =
   | "peer_discovered"
   | "peer_pending_approval"
@@ -59,9 +63,35 @@ export type MeshEventStore = {
   };
 };
 
+export type MeshEventStoreOptions = {
+  baseDir?: string;
+  logger?: {
+    warn?: (message: string) => void;
+  };
+};
+
 const MAX_EVENTS = 200;
+const DEFAULT_DIR = path.join(os.homedir(), ".openclaw", "mesh");
 const DEDUPE_WINDOW_MS = 5000;
 const REPEAT_SURFACE_MS = 60000;
+const VALID_EVENT_KINDS = new Set<string>([
+  "peer_discovered",
+  "peer_pending_approval",
+  "peer_approved",
+  "peer_denied",
+  "peer_connected",
+  "peer_disconnected",
+  "manifest_received",
+  "sync_requested",
+  "file_sent",
+  "file_received",
+  "file_written",
+  "file_rejected",
+  "sync_applied",
+  "sync_failed",
+  "conflict",
+  "discovery_warning",
+]);
 const HIGH_PRIORITY = new Set<MeshEventKind>([
   "peer_pending_approval",
   "peer_disconnected",
@@ -72,6 +102,61 @@ const HIGH_PRIORITY = new Set<MeshEventKind>([
 
 function createId(): string {
   return `mesh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function eventStorePath(baseDir: string): string {
+  return path.join(baseDir, "events.json");
+}
+
+function ensureDir(dir: string) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function parseEventRecord(value: unknown): MeshEventRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.id !== "string" || candidate.id.length === 0) return null;
+  if (typeof candidate.kind !== "string" || !VALID_EVENT_KINDS.has(candidate.kind)) return null;
+  if (typeof candidate.createdAt !== "number" || !Number.isFinite(candidate.createdAt)) return null;
+  if (typeof candidate.message !== "string") return null;
+  if (typeof candidate.delivered !== "boolean") return null;
+  if (typeof candidate.acknowledged !== "boolean") return null;
+  if (typeof candidate.occurrences !== "number" || !Number.isFinite(candidate.occurrences)) return null;
+  return {
+    id: candidate.id,
+    kind: candidate.kind as MeshEventKind,
+    peerName: typeof candidate.peerName === "string" ? candidate.peerName : undefined,
+    filePath: typeof candidate.filePath === "string" ? candidate.filePath : undefined,
+    createdAt: candidate.createdAt,
+    message: candidate.message,
+    details: candidate.details && typeof candidate.details === "object" ? candidate.details as Record<string, unknown> : undefined,
+    delivered: candidate.delivered,
+    acknowledged: candidate.acknowledged,
+    expiresAt: typeof candidate.expiresAt === "number" && Number.isFinite(candidate.expiresAt) ? candidate.expiresAt : undefined,
+    lastDeliveredAt:
+      typeof candidate.lastDeliveredAt === "number" && Number.isFinite(candidate.lastDeliveredAt)
+        ? candidate.lastDeliveredAt
+        : undefined,
+    lastAcknowledgedAt:
+      typeof candidate.lastAcknowledgedAt === "number" && Number.isFinite(candidate.lastAcknowledgedAt)
+        ? candidate.lastAcknowledgedAt
+        : undefined,
+    lastSurfacedAt:
+      typeof candidate.lastSurfacedAt === "number" && Number.isFinite(candidate.lastSurfacedAt)
+        ? candidate.lastSurfacedAt
+        : undefined,
+    occurrences: candidate.occurrences,
+  };
+}
+
+function loadPersistedEvents(baseDir: string): MeshEventRecord[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(eventStorePath(baseDir), "utf-8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(parseEventRecord).filter((event): event is MeshEventRecord => Boolean(event)).slice(-MAX_EVENTS);
+  } catch {
+    return [];
+  }
 }
 
 function eventKey(event: Pick<MeshEventRecord, "kind" | "peerName" | "filePath" | "message">): string {
@@ -129,10 +214,21 @@ export function summarizeMeshEvents(events: MeshEventRecord[]): string {
   return `[mesh] IMPORTANT — You MUST immediately tell the user about the following mesh event(s). Do NOT keep this to yourself or wait for them to ask. Notify them now: ${parts.join(" ")}`;
 }
 
-export function createMeshEventStore(): MeshEventStore {
-  const events: MeshEventRecord[] = [];
+export function createMeshEventStore(options: MeshEventStoreOptions = {}): MeshEventStore {
+  const baseDir = options.baseDir ?? DEFAULT_DIR;
+  const events: MeshEventRecord[] = loadPersistedEvents(baseDir);
 
-  const prune = () => {
+  const save = () => {
+    try {
+      ensureDir(baseDir);
+      fs.writeFileSync(eventStorePath(baseDir), JSON.stringify(events, null, 2), { mode: 0o600 });
+    } catch (err) {
+      options.logger?.warn?.(`Could not persist mesh event store: ${err}`);
+    }
+  };
+
+  const prune = (): boolean => {
+    let changed = false;
     while (events.length > MAX_EVENTS) {
       const acknowledgedIndex = events.findIndex((event) => event.acknowledged);
       if (acknowledgedIndex >= 0) {
@@ -140,18 +236,27 @@ export function createMeshEventStore(): MeshEventStore {
       } else {
         events.shift();
       }
+      changed = true;
     }
+    return changed;
   };
 
-  const purgeExpired = () => {
+  const purgeExpired = (): boolean => {
     const now = Date.now();
+    let changed = false;
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
       if (event.expiresAt && event.expiresAt <= now) {
         events.splice(index, 1);
+        changed = true;
       }
     }
+    return changed;
   };
+
+  if (prune() || purgeExpired()) {
+    save();
+  }
 
   return {
     addEvent(input) {
@@ -177,6 +282,7 @@ export function createMeshEventStore(): MeshEventStore {
         existing.details = input.details ?? existing.details;
         existing.expiresAt = input.expiresAt ?? existing.expiresAt;
         existing.acknowledged = false;
+        save();
         return existing;
       }
 
@@ -195,11 +301,12 @@ export function createMeshEventStore(): MeshEventStore {
       };
       events.push(record);
       prune();
+      save();
       return record;
     },
 
     acknowledge(eventId) {
-      purgeExpired();
+      const expired = purgeExpired();
       const now = Date.now();
       let acknowledged = 0;
       if (!eventId || eventId === "all") {
@@ -210,6 +317,7 @@ export function createMeshEventStore(): MeshEventStore {
             acknowledged += 1;
           }
         }
+        if (expired || acknowledged > 0) save();
         return { acknowledged, all: true };
       }
 
@@ -219,32 +327,36 @@ export function createMeshEventStore(): MeshEventStore {
         match.lastAcknowledgedAt = now;
         acknowledged = 1;
       }
+      if (expired || acknowledged > 0) save();
       return { acknowledged, all: false };
     },
 
     markDelivered(eventIds, timestamp) {
       const targets = new Set(eventIds);
+      let changed = false;
       for (const event of events) {
         if (targets.has(event.id)) {
           event.delivered = true;
           event.lastDeliveredAt = timestamp;
           event.lastSurfacedAt = timestamp;
+          changed = true;
         }
       }
+      if (changed) save();
     },
 
     getUnreadCount() {
-      purgeExpired();
+      if (purgeExpired()) save();
       return events.filter((event) => !event.acknowledged).length;
     },
 
     getUnacknowledged() {
-      purgeExpired();
+      if (purgeExpired()) save();
       return [...events].filter((event) => !event.acknowledged).sort((a, b) => a.createdAt - b.createdAt);
     },
 
     getDeliverable(timestamp) {
-      purgeExpired();
+      if (purgeExpired()) save();
       return [...events]
         .filter((event) => {
           if (event.acknowledged) return false;
@@ -259,17 +371,17 @@ export function createMeshEventStore(): MeshEventStore {
     },
 
     listRecent(limit = 20) {
-      purgeExpired();
+      if (purgeExpired()) save();
       return [...events].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
     },
 
     listUnread() {
-      purgeExpired();
+      if (purgeExpired()) save();
       return [...events].filter((event) => !event.acknowledged).sort((a, b) => a.createdAt - b.createdAt);
     },
 
     getStats() {
-      purgeExpired();
+      if (purgeExpired()) save();
       const unread = events.filter((event) => !event.acknowledged);
       const delivered = events.filter((event) => event.lastDeliveredAt).map((event) => event.lastDeliveredAt as number);
       const acknowledged = events

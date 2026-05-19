@@ -33,6 +33,7 @@ export declare function createMeshConnectionsTool(services: {
                 peerName: string;
                 fingerprint: string;
                 trustWarning: string;
+                capabilities: string[];
                 remoteAppliedFiles: import("../transport.js").RemoteApplyRecord[];
                 remoteRejectedFiles: import("../transport.js").RemoteRejectRecord[];
                 inFlightSends: import("../transport.js").InFlightSendRecord[];

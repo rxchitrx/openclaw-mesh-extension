@@ -8,6 +8,7 @@ export type FileWatcherConfig = {
   workspaceDir: string;
   syncState: SyncStateService;
   logger: any;
+  ignorePatterns?: string[];
 };
 
 export type TrackedFile = {
@@ -28,7 +29,7 @@ export type FileWatcherService = {
   onFileDeleted: ((relativePath: string) => void) | null;
 };
 
-const IGNORE_PATTERNS = [/node_modules/, /\.git/, /dist/, /\.DS_Store/, /Thumbs\.db/];
+const DEFAULT_IGNORE_PATTERNS = [/node_modules/, /\.git/, /dist/, /\.DS_Store/, /Thumbs\.db/];
 
 const TEXT_EXTENSIONS = new Set([
   ".md", ".txt", ".json", ".ts", ".js", ".tsx", ".jsx",
@@ -45,16 +46,57 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
   const watchedFiles = new Map<string, TrackedFile>();
   const fileContents = new Map<string, string>();
+  const fileRealPaths = new Map<string, string>();
   const ignoreChanges = new Map<string, number>();
   let watcher: fs.FSWatcher | null = null;
   let onFileDeleted: ((relativePath: string) => void) | null = null;
   const IGNORE_WINDOW_MS = 2000;
+  const workspaceRealDir = fs.realpathSync(workspaceDir);
+  const ignorePatterns = [
+    ...DEFAULT_IGNORE_PATTERNS,
+    ...(config.ignorePatterns ?? []).flatMap((pattern) => {
+      try {
+        return [new RegExp(pattern)];
+      } catch (err) {
+        logger.warn(`Ignoring invalid file watcher ignore pattern '${pattern}': ${err}`);
+        return [];
+      }
+    }),
+  ];
 
   const shouldWatch = (filePath: string): boolean => {
-    for (const pattern of IGNORE_PATTERNS) {
+    for (const pattern of ignorePatterns) {
       if (pattern.test(filePath)) return false;
     }
     return true;
+  };
+
+  const isInsideWorkspace = (realPath: string): boolean => {
+    const relative = path.relative(workspaceRealDir, realPath);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  };
+
+  const resolveWatchedPath = (filePath: string, action: "change" | "delete"): {
+    relativePath: string;
+    realPath: string | null;
+  } | null => {
+    const relativePath = path.relative(workspaceDir, filePath);
+    try {
+      const realPath = fs.realpathSync(filePath);
+      if (!isInsideWorkspace(realPath)) {
+        logger.warn(`Skipping ${action} outside tracked workspace via symlink: ${relativePath} -> ${realPath}`);
+        return null;
+      }
+      return { relativePath, realPath };
+    } catch (err: any) {
+      if (action === "delete" && watchedFiles.has(relativePath)) {
+        return { relativePath, realPath: fileRealPaths.get(relativePath) ?? null };
+      }
+      if (err?.code !== "ENOENT") {
+        logger.warn(`Skipping ${action} for unreadable path ${relativePath}: ${err}`);
+      }
+      return null;
+    }
   };
 
   const isBinaryFile = (filePath: string): boolean => {
@@ -107,7 +149,10 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
   const handleFileChange = async (filePath: string) => {
     if (!shouldWatch(filePath)) return;
 
-    const relativePath = path.relative(workspaceDir, filePath);
+    const resolved = resolveWatchedPath(filePath, "change");
+    if (!resolved) return;
+    const { relativePath, realPath } = resolved;
+    if (!realPath) return;
 
     const ignoreUntil = ignoreChanges.get(relativePath);
     if (ignoreUntil && Date.now() < ignoreUntil) {
@@ -123,6 +168,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
         const size = await getFileSize(filePath);
         watchedFiles.set(relativePath, { relativePath, isBinary: binary, hash, size });
         fileContents.set(relativePath, content);
+        fileRealPaths.set(relativePath, realPath);
         syncState.recordSyncedHash(relativePath, hash);
         logger.debug(`Updated cache for received file: ${relativePath}`);
       }
@@ -153,6 +199,7 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     const tracked: TrackedFile = { relativePath, isBinary: binary, hash, size };
     watchedFiles.set(relativePath, tracked);
     fileContents.set(relativePath, content);
+    fileRealPaths.set(relativePath, realPath);
 
     syncState.recordLocalChange(relativePath, hash, binary);
     logger.info(`File change detected: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
@@ -161,10 +208,13 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
   const handleFileDeletion = (filePath: string) => {
     if (!shouldWatch(filePath)) return;
 
-    const relativePath = path.relative(workspaceDir, filePath);
+    const resolved = resolveWatchedPath(filePath, "delete");
+    if (!resolved) return;
+    const { relativePath } = resolved;
     if (watchedFiles.has(relativePath)) {
       watchedFiles.delete(relativePath);
       fileContents.delete(relativePath);
+      fileRealPaths.delete(relativePath);
       syncState.removeFile(relativePath);
       logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
 
@@ -234,10 +284,10 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
           const fullPath = path.join(dir, entry.name);
 
           if (entry.isDirectory()) {
-            if (!IGNORE_PATTERNS.some((p) => p.test(entry.name))) {
+            if (shouldWatch(fullPath)) {
               await scanDir(fullPath);
             }
-          } else if (entry.isFile()) {
+          } else if (entry.isFile() || entry.isSymbolicLink()) {
             if (shouldWatch(fullPath)) {
               await handleFileChange(fullPath);
             }

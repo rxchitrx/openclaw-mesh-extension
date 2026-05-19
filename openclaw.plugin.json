@@ -40,6 +40,22 @@
       "trackDir": {
         "type": "string",
         "description": "Directory to track and sync with peers"
+      },
+      "ignorePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Additional regex patterns for files and directories the file watcher should ignore"
+      },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Flat capability tags advertised to mesh peers, such as has:xcode or can:ios-build"
       }
     }
   }

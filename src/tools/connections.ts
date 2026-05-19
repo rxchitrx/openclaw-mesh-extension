@@ -61,6 +61,7 @@ export function createMeshConnectionsTool(
           if (info) {
             const trackDir = info.trackingDir || "not tracking";
             message += ` | tracking: ${trackDir} (${info.trackingFileCount} files)`;
+            message += ` | capabilities: ${info.capabilities.length > 0 ? info.capabilities.join(", ") : "none"}`;
           }
           if (inFlight.length > 0) {
             message += ` | in-flight: ${inFlight.length}`;
@@ -100,6 +101,7 @@ export function createMeshConnectionsTool(
             peerName,
             fingerprint: transport.getPeerFingerprint(peerName),
             trustWarning: transport.getPeerTrustWarning(peerName),
+            capabilities: transport.getNodeInfo(peerName)?.capabilities ?? [],
             remoteAppliedFiles: transport.getRemoteAppliedFiles(peerName),
             remoteRejectedFiles: transport.getRemoteRejectedFiles(peerName),
             inFlightSends: transport.getInFlightSends(peerName),

@@ -61,6 +61,26 @@ function optionalHash(value) {
         return result;
     return { ok: true, value: result.value };
 }
+function optionalStringArray(value, field, maxItems, maxStringLength = MAX_STRING_FIELD_LENGTH) {
+    if (value === undefined || value === null)
+        return { ok: true, value: [] };
+    if (!Array.isArray(value))
+        return fail("invalid_message", `${field} must be an array`);
+    const strings = [];
+    for (const item of value) {
+        if (strings.length >= maxItems)
+            break;
+        if (typeof item !== "string")
+            return fail("invalid_message", `${field} must contain only strings`);
+        if (item.length > maxStringLength)
+            return fail("invalid_message", `${field} contains a string that is too long`);
+        const normalized = item.trim();
+        if (normalized.length > 0) {
+            strings.push(normalized);
+        }
+    }
+    return { ok: true, value: strings };
+}
 function stringByteLength(value) {
     return Buffer.byteLength(value, "utf-8");
 }
@@ -101,6 +121,9 @@ export function validateNodeInfo(message) {
     const trackingFileCount = typeof message.trackingFileCount === "number" && Number.isFinite(message.trackingFileCount) && message.trackingFileCount >= 0
         ? message.trackingFileCount
         : trackingFiles.length;
+    const capabilities = optionalStringArray(message.capabilities, "capabilities", 256);
+    if (!capabilities.ok)
+        return capabilities;
     return {
         ok: true,
         value: {
@@ -109,6 +132,7 @@ export function validateNodeInfo(message) {
             trackingDir: trackingDir.value || null,
             trackingFileCount,
             trackingFiles,
+            capabilities: capabilities.value,
         },
     };
 }

@@ -12,9 +12,13 @@
     "test:diff": "node scripts/test-diff.mjs",
     "test:path-safety": "node scripts/test-path-safety.mjs",
     "test:protocol": "node scripts/test-protocol-validation.mjs",
+    "test:capabilities": "node scripts/test-capability-registry.mjs",
     "test:identity": "node scripts/test-peer-identity.mjs",
     "test:approval": "node scripts/test-approval-flow.mjs",
-    "test:notifications": "node scripts/test-urgent-notifications.mjs"
+    "test:notifications": "node scripts/test-urgent-notifications.mjs",
+    "test:symlink-safety": "node scripts/test-symlink-safety.mjs",
+    "test:ignore-patterns": "node scripts/test-ignore-patterns.mjs",
+    "test:persistence": "node scripts/test-persistence.mjs"
   },
   "dependencies": {
     "@homebridge/ciao": "^1.3.6",

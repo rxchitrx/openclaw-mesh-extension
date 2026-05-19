@@ -3,6 +3,7 @@ import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { FileWatcherService } from "../file-watcher.js";
 import type { MeshEventStore } from "../events.js";
+import type { CapabilityRegistry } from "../capability-registry.js";
 
 type TrackState = {
   fileWatcher: FileWatcherService | null;
@@ -16,6 +17,7 @@ type MeshServices = {
   transport: TransportService;
   syncState: SyncStateService;
   getTrackState: () => TrackState;
+  capabilityRegistry?: CapabilityRegistry;
   eventStore?: MeshEventStore;
 };
 
@@ -42,6 +44,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       const eventStats = services.eventStore?.getStats();
       const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
       const inFlight = transport.getInFlightSends();
+      const localCapabilities = services.capabilityRegistry?.list() ?? [];
       const now = new Date().toISOString();
 
       let message = `MESH STATUS\n`;
@@ -57,7 +60,8 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       message += `LOCAL NODE\n`;
       message += `  Name: ${localNode.name}\n`;
       message += `  Host: ${localNode.host}\n`;
-      message += `  Port: ${localNode.port}\n\n`;
+      message += `  Port: ${localNode.port}\n`;
+      message += `  Capabilities: ${localCapabilities.length > 0 ? localCapabilities.join(", ") : "none"}\n\n`;
 
       message += `NETWORK\n`;
       message += `  Discovered peers: ${peers.length}\n`;
@@ -85,6 +89,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
           if (info) {
             const dirStr = info.trackingDir || "not tracking";
             message += ` | tracking: ${dirStr} (${info.trackingFileCount} files)`;
+            message += ` | capabilities: ${info.capabilities.length > 0 ? info.capabilities.join(", ") : "none"}`;
           }
           message += manifest ? ` | manifest: ${manifest.length} files` : " | manifest: none";
           const applied = transport.getRemoteAppliedFiles(name);
@@ -150,6 +155,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
           ok: true,
           status: {
             localNode,
+            localCapabilities,
             trackDir: currentTrackDir,
             peerCount: peers.length,
             connectionCount: connections.length,

@@ -1,6 +1,7 @@
 export type SyncStateConfig = {
     nodeName: string;
     logger: any;
+    baseDir?: string;
 };
 export type FileVersion = {
     relativePath: string;

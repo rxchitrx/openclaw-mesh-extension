@@ -19,6 +19,7 @@ export type NodeInfoMessage = BaseMeshMessage & {
     trackingDir: string | null;
     trackingFileCount: number;
     trackingFiles: string[];
+    capabilities: string[];
 };
 export type ManifestMessage = BaseMeshMessage & {
     type: "manifest";

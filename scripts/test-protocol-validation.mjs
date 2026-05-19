@@ -8,6 +8,7 @@ import {
   MAX_RAW_MESSAGE_BYTES,
   isRawMessageTooLarge,
   parseMeshMessage,
+  validateNodeInfo,
   validateFileApplied,
   validateFileContent,
   validateFilePathMessage,
@@ -44,6 +45,28 @@ const validPreview = validateFilePreviewResponse({
   isBinary: false,
 });
 assert.equal(validPreview.ok, true);
+
+const validNodeInfo = validateNodeInfo({
+  type: "node_info",
+  nodeName: "node-a",
+  trackingDir: "/tmp/project",
+  trackingFileCount: 1,
+  trackingFiles: ["src/index.ts"],
+  capabilities: ["has:xcode", " can:ios-build "],
+});
+assert.equal(validNodeInfo.ok, true);
+assert.deepEqual(validNodeInfo.value.capabilities, ["has:xcode", "can:ios-build"]);
+
+const legacyNodeInfo = validateNodeInfo({
+  type: "node_info",
+  nodeName: "node-b",
+  trackingDir: null,
+  trackingFileCount: 0,
+  trackingFiles: [],
+});
+assert.equal(legacyNodeInfo.ok, true);
+assert.deepEqual(legacyNodeInfo.value.capabilities, []);
+assert.equal(validateNodeInfo({ type: "node_info", nodeName: "node-c", capabilities: ["ok", 123] }).ok, false);
 
 assert.equal(validateFileApplied({ type: "file_applied", path: "src/index.ts", hash: "abc123" }).ok, true);
 assert.equal(validateFileRejected({ type: "file_rejected", path: "src/index.ts", reason: "conflict" }).ok, true);

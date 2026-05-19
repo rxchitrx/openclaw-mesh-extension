@@ -300,6 +300,7 @@ export function createTransport(config) {
                             trackingDir: validation.value.trackingDir,
                             trackingFileCount: validation.value.trackingFileCount,
                             trackingFiles: validation.value.trackingFiles,
+                            capabilities: validation.value.capabilities,
                         };
                         remoteNodeInfo.set(peerName, info);
                         const dirStr = info.trackingDir ? info.trackingDir : "none";
@@ -668,6 +669,7 @@ export function createTransport(config) {
                 trackingDir: info.trackingDir,
                 trackingFileCount: info.trackingFileCount,
                 trackingFiles: info.trackingFiles,
+                capabilities: info.capabilities,
             });
             logger.info(`Sent node_info to ${peerName}`);
         }

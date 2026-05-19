@@ -65,6 +65,7 @@ export type NodeInfo = {
   trackingDir: string | null;
   trackingFileCount: number;
   trackingFiles: string[];
+  capabilities: string[];
 };
 
 export type RemoteApplyRecord = {
@@ -472,6 +473,7 @@ export function createTransport(config: TransportConfig): TransportService {
               trackingDir: validation.value.trackingDir,
               trackingFileCount: validation.value.trackingFileCount,
               trackingFiles: validation.value.trackingFiles,
+              capabilities: validation.value.capabilities,
             };
             remoteNodeInfo.set(peerName, info);
             const dirStr = info.trackingDir ? info.trackingDir : "none";
@@ -838,6 +840,7 @@ export function createTransport(config: TransportConfig): TransportService {
         trackingDir: info.trackingDir,
         trackingFileCount: info.trackingFileCount,
         trackingFiles: info.trackingFiles,
+        capabilities: info.capabilities,
       });
       logger.info(`Sent node_info to ${peerName}`);
     }

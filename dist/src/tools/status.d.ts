@@ -3,6 +3,7 @@ import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { FileWatcherService } from "../file-watcher.js";
 import type { MeshEventStore } from "../events.js";
+import type { CapabilityRegistry } from "../capability-registry.js";
 type TrackState = {
     fileWatcher: FileWatcherService | null;
     currentTrackDir: string | null;
@@ -14,6 +15,7 @@ type MeshServices = {
     transport: TransportService;
     syncState: SyncStateService;
     getTrackState: () => TrackState;
+    capabilityRegistry?: CapabilityRegistry;
     eventStore?: MeshEventStore;
 };
 export declare function createMeshStatusTool(services: MeshServices, _ctx: any): {
@@ -38,6 +40,7 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                     host: string;
                     port: number;
                 };
+                localCapabilities: string[];
                 trackDir: string;
                 peerCount: number;
                 connectionCount: number;

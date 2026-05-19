@@ -3,6 +3,8 @@ export type MeshConfig = {
     nodeName?: string;
     port?: number;
     trackDir?: string;
+    ignorePatterns?: string[];
+    capabilities?: string[];
     urgentNotifyCooldownMs?: number;
     notificationSessionTtlMs?: number;
 };
@@ -27,6 +29,20 @@ declare const meshPlugin: {
             };
             trackDir: {
                 type: string;
+            };
+            ignorePatterns: {
+                type: string;
+                items: {
+                    type: string;
+                };
+                default: any[];
+            };
+            capabilities: {
+                type: string;
+                items: {
+                    type: string;
+                };
+                default: any[];
             };
             urgentNotifyCooldownMs: {
                 type: string;

@@ -45,6 +45,7 @@ export type NodeInfoMessage = BaseMeshMessage & {
   trackingDir: string | null;
   trackingFileCount: number;
   trackingFiles: string[];
+  capabilities: string[];
 };
 
 export type ManifestMessage = BaseMeshMessage & {
@@ -129,6 +130,22 @@ function optionalHash(value: unknown): ValidationResult<string | undefined> {
   return { ok: true, value: result.value };
 }
 
+function optionalStringArray(value: unknown, field: string, maxItems: number, maxStringLength = MAX_STRING_FIELD_LENGTH): ValidationResult<string[]> {
+  if (value === undefined || value === null) return { ok: true, value: [] };
+  if (!Array.isArray(value)) return fail("invalid_message", `${field} must be an array`);
+  const strings: string[] = [];
+  for (const item of value) {
+    if (strings.length >= maxItems) break;
+    if (typeof item !== "string") return fail("invalid_message", `${field} must contain only strings`);
+    if (item.length > maxStringLength) return fail("invalid_message", `${field} contains a string that is too long`);
+    const normalized = item.trim();
+    if (normalized.length > 0) {
+      strings.push(normalized);
+    }
+  }
+  return { ok: true, value: strings };
+}
+
 function stringByteLength(value: string): number {
   return Buffer.byteLength(value, "utf-8");
 }
@@ -173,6 +190,9 @@ export function validateNodeInfo(message: Record<string, unknown>): ValidationRe
     ? message.trackingFileCount
     : trackingFiles.length;
 
+  const capabilities = optionalStringArray(message.capabilities, "capabilities", 256);
+  if (!capabilities.ok) return capabilities;
+
   return {
     ok: true,
     value: {
@@ -181,6 +201,7 @@ export function validateNodeInfo(message: Record<string, unknown>): ValidationRe
       trackingDir: trackingDir.value || null,
       trackingFileCount,
       trackingFiles,
+      capabilities: capabilities.value,
     },
   };
 }
