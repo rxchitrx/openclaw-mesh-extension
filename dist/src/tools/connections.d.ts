@@ -29,6 +29,7 @@ export declare function createMeshConnectionsTool(services: {
                 identityVerified: boolean;
                 fingerprintMismatch: boolean;
             }[];
+            pendingExecutions: import("../transport.js").PendingExecution[];
             peerState: {
                 peerName: string;
                 fingerprint: string;
@@ -37,6 +38,7 @@ export declare function createMeshConnectionsTool(services: {
                 remoteAppliedFiles: import("../transport.js").RemoteApplyRecord[];
                 remoteRejectedFiles: import("../transport.js").RemoteRejectRecord[];
                 inFlightSends: import("../transport.js").InFlightSendRecord[];
+                pendingExecutions: import("../transport.js").PendingExecution[];
             }[];
         };
     }>;

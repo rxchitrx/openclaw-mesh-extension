@@ -8,6 +8,8 @@ import {
   isRawMessageTooLarge,
   parseMeshMessage,
   validateApprovalResponse,
+  validateCapabilityExecute,
+  validateCapabilityExecuteResult,
   validateFileApplied,
   validateFileContent,
   validateFilePathMessage,
@@ -36,6 +38,7 @@ export type TransportConfig = {
   port: number;
   syncState: SyncStateService;
   logger: any;
+  executionTimeoutMs?: number;
 };
 
 export type Connection = {
@@ -97,6 +100,16 @@ export type FilePreview = {
   hash?: string | null;
 };
 
+export type PendingExecution = {
+  requestId: string;
+  peerName: string;
+  capability: string;
+  instruction: string;
+  from: string;
+  requestedAt: number;
+  expiresAt: number;
+};
+
 export type TransportNotification = {
   type:
     | "peer_pending"
@@ -116,7 +129,9 @@ export type TransportNotification = {
     | "file_received"
     | "file_written"
     | "file_rejected"
-    | "file_preview";
+    | "file_preview"
+    | "capability_execute_requested"
+    | "capability_execute_completed";
   message: string;
   peerName?: string;
   filePath?: string;
@@ -140,12 +155,14 @@ export type TransportService = {
   requestFilePreview: (peerName: string, relativePath: string, timeoutMs?: number) => Promise<FilePreview | null>;
   sendLocalManifest: (peerName: string, manifest: TrackedFile[]) => void;
   notifyFileDeleted: (relativePath: string) => void;
+  broadcastNodeInfo: () => void;
   setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
   maintainConnections: () => Promise<void>;
   getNodeInfo: (peerName: string) => NodeInfo | null;
   getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
   getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
   getInFlightSends: (peerName?: string) => InFlightSendRecord[];
+  getPendingExecutions: (peerName?: string) => PendingExecution[];
   getPeerFingerprint: (peerName: string) => string | null;
   getPeerTrustWarning: (peerName: string) => string | null;
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
@@ -157,6 +174,7 @@ export type TransportService = {
 
 export function createTransport(config: TransportConfig): TransportService {
   const { nodeName, port, syncState, logger } = config;
+  const executionTimeoutMs = config.executionTimeoutMs ?? 60000;
   const identity: MeshIdentity = loadOrCreateIdentity();
 
   const connections = new Map<string, Connection>();
@@ -173,6 +191,7 @@ export function createTransport(config: TransportConfig): TransportService {
     resolve: (preview: FilePreview | null) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  const pendingExecutions = new Map<string, PendingExecution & { timer: ReturnType<typeof setTimeout> }>();
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
@@ -199,6 +218,90 @@ export function createTransport(config: TransportConfig): TransportService {
       filePath,
       data: { reason },
     });
+  };
+
+  const createExecutionRequestId = (): string => {
+    return `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+
+  const publicPendingExecution = (execution: PendingExecution): PendingExecution => ({
+    requestId: execution.requestId,
+    peerName: execution.peerName,
+    capability: execution.capability,
+    instruction: execution.instruction,
+    from: execution.from,
+    requestedAt: execution.requestedAt,
+    expiresAt: execution.expiresAt,
+  });
+
+  const completePendingExecution = (requestId: string, result: { error?: string; result?: unknown; from?: string }, expectedPeerName?: string) => {
+    const execution = pendingExecutions.get(requestId);
+    if (!execution) return false;
+    if (expectedPeerName && execution.peerName !== expectedPeerName) {
+      logger.warn(`Ignoring capability execution result '${requestId}' from unexpected peer '${expectedPeerName}'. Expected '${execution.peerName}'.`);
+      return false;
+    }
+    clearTimeout(execution.timer);
+    pendingExecutions.delete(requestId);
+    const timedOut = result.error === "timeout";
+    notify({
+      type: "capability_execute_completed",
+      message: timedOut
+        ? `Capability execution request '${requestId}' for '${execution.capability}' from '${execution.peerName}' timed out.`
+        : `Capability execution request '${requestId}' for '${execution.capability}' from '${execution.peerName}' completed${result.error ? ` with error: ${result.error}` : ""}.`,
+      peerName: execution.peerName,
+      data: {
+        requestId,
+        capability: execution.capability,
+        instruction: execution.instruction,
+        from: result.from || execution.from,
+        requestedAt: execution.requestedAt,
+        completedAt: Date.now(),
+        error: result.error,
+        result: result.result,
+        timedOut,
+      },
+    });
+    return true;
+  };
+
+  const storePendingExecution = (input: {
+    requestId: string;
+    peerName: string;
+    capability: string;
+    instruction: string;
+    from: string;
+  }) => {
+    const existing = pendingExecutions.get(input.requestId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      pendingExecutions.delete(input.requestId);
+    }
+
+    const requestedAt = Date.now();
+    const execution: PendingExecution & { timer: ReturnType<typeof setTimeout> } = {
+      ...input,
+      requestedAt,
+      expiresAt: requestedAt + executionTimeoutMs,
+      timer: setTimeout(() => {
+        completePendingExecution(input.requestId, { error: "timeout" });
+      }, executionTimeoutMs),
+    };
+    pendingExecutions.set(input.requestId, execution);
+    notify({
+      type: "capability_execute_requested",
+      message: `Peer '${input.peerName}' requested capability '${input.capability}'. Ask the user before executing it.`,
+      peerName: input.peerName,
+      data: {
+        requestId: input.requestId,
+        capability: input.capability,
+        instruction: input.instruction,
+        from: input.from,
+        requestedAt,
+        expiresAt: execution.expiresAt,
+      },
+    });
+    return publicPendingExecution(execution);
   };
 
   const rejectValidation = <T>(peerName: string, validation: Extract<ValidationResult<T>, { ok: false }>, rawPath?: unknown, hash?: string | null) => {
@@ -823,6 +926,43 @@ export function createTransport(config: TransportConfig): TransportService {
           logger.debug(`Received legacy '${message.type}' message — ignoring.`);
           break;
 
+        case "capability_execute":
+          if (!approved) return;
+          {
+            const validation = validateCapabilityExecute(message);
+            if (!validation.ok) {
+              rejectValidation(peerName, validation);
+              break;
+            }
+            const request = validation.value;
+            const requestId = request.requestId || createExecutionRequestId();
+            storePendingExecution({
+              requestId,
+              peerName,
+              capability: request.capability,
+              instruction: request.instruction,
+              from: request.from,
+            });
+            logger.info(`Pending capability execution ${requestId} from ${peerName}: ${request.capability}`);
+          }
+          break;
+
+        case "capability_execute_result":
+          if (!approved) return;
+          {
+            const validation = validateCapabilityExecuteResult(message);
+            if (!validation.ok) {
+              rejectValidation(peerName, validation);
+              break;
+            }
+            completePendingExecution(validation.value.requestId, {
+              result: validation.value.result,
+              error: validation.value.error,
+              from: validation.value.from || peerName,
+            }, peerName);
+          }
+          break;
+
         default:
           logger.warn(`Unknown message type from ${peerName}: ${message.type}`);
       }
@@ -1003,6 +1143,11 @@ export function createTransport(config: TransportConfig): TransportService {
         request.resolve(null);
       }
       previewRequests.clear();
+
+      for (const [, execution] of pendingExecutions) {
+        clearTimeout(execution.timer);
+      }
+      pendingExecutions.clear();
 
       for (const [, conn] of connections) {
         conn.socket.close();
@@ -1282,6 +1427,14 @@ export function createTransport(config: TransportConfig): TransportService {
       }
     },
 
+    broadcastNodeInfo() {
+      for (const [peerName, conn] of connections) {
+        if (conn.approved && conn.socket.readyState === 1) {
+          sendNodeInfoToPeer(peerName);
+        }
+      }
+    },
+
     setNotificationHandler(handler: (notification: TransportNotification) => void) {
       notificationHandler = handler;
     },
@@ -1313,6 +1466,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
     getInFlightSends(peerName?: string): InFlightSendRecord[] {
       const records = [...inFlightSends.values()];
+      return peerName ? records.filter((record) => record.peerName === peerName) : records;
+    },
+
+    getPendingExecutions(peerName?: string): PendingExecution[] {
+      const records = [...pendingExecutions.values()].map(publicPendingExecution);
       return peerName ? records.filter((record) => record.peerName === peerName) : records;
     },
 

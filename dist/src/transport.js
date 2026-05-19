@@ -1,9 +1,10 @@
 import { isLocalIPv4Address, normalizePeerHost } from "./discovery.js";
 import { normalizeRelativePath } from "./path-safety.js";
-import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
+import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateCapabilityExecute, validateCapabilityExecuteResult, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
 import { checkTrustedPeer, createNonce, decodePublicKeyFromWire, encodePublicKeyForWire, loadOrCreateIdentity, signIdentityChallenge, touchTrustedPeer, trustPeer, verifyIdentityProof, } from "./peer-identity.js";
 export function createTransport(config) {
     const { nodeName, port, syncState, logger } = config;
+    const executionTimeoutMs = config.executionTimeoutMs ?? 60000;
     const identity = loadOrCreateIdentity();
     const connections = new Map();
     const pendingConnections = new Map();
@@ -16,6 +17,7 @@ export function createTransport(config) {
     const peerTrustWarnings = new Map();
     const challengeNonces = new Map();
     const previewRequests = new Map();
+    const pendingExecutions = new Map();
     let nodeInfoProvider = null;
     let fileContentProvider = null;
     let manifestProvider = null;
@@ -39,6 +41,80 @@ export function createTransport(config) {
             filePath,
             data: { reason },
         });
+    };
+    const createExecutionRequestId = () => {
+        return `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    };
+    const publicPendingExecution = (execution) => ({
+        requestId: execution.requestId,
+        peerName: execution.peerName,
+        capability: execution.capability,
+        instruction: execution.instruction,
+        from: execution.from,
+        requestedAt: execution.requestedAt,
+        expiresAt: execution.expiresAt,
+    });
+    const completePendingExecution = (requestId, result, expectedPeerName) => {
+        const execution = pendingExecutions.get(requestId);
+        if (!execution)
+            return false;
+        if (expectedPeerName && execution.peerName !== expectedPeerName) {
+            logger.warn(`Ignoring capability execution result '${requestId}' from unexpected peer '${expectedPeerName}'. Expected '${execution.peerName}'.`);
+            return false;
+        }
+        clearTimeout(execution.timer);
+        pendingExecutions.delete(requestId);
+        const timedOut = result.error === "timeout";
+        notify({
+            type: "capability_execute_completed",
+            message: timedOut
+                ? `Capability execution request '${requestId}' for '${execution.capability}' from '${execution.peerName}' timed out.`
+                : `Capability execution request '${requestId}' for '${execution.capability}' from '${execution.peerName}' completed${result.error ? ` with error: ${result.error}` : ""}.`,
+            peerName: execution.peerName,
+            data: {
+                requestId,
+                capability: execution.capability,
+                instruction: execution.instruction,
+                from: result.from || execution.from,
+                requestedAt: execution.requestedAt,
+                completedAt: Date.now(),
+                error: result.error,
+                result: result.result,
+                timedOut,
+            },
+        });
+        return true;
+    };
+    const storePendingExecution = (input) => {
+        const existing = pendingExecutions.get(input.requestId);
+        if (existing) {
+            clearTimeout(existing.timer);
+            pendingExecutions.delete(input.requestId);
+        }
+        const requestedAt = Date.now();
+        const execution = {
+            ...input,
+            requestedAt,
+            expiresAt: requestedAt + executionTimeoutMs,
+            timer: setTimeout(() => {
+                completePendingExecution(input.requestId, { error: "timeout" });
+            }, executionTimeoutMs),
+        };
+        pendingExecutions.set(input.requestId, execution);
+        notify({
+            type: "capability_execute_requested",
+            message: `Peer '${input.peerName}' requested capability '${input.capability}'. Ask the user before executing it.`,
+            peerName: input.peerName,
+            data: {
+                requestId: input.requestId,
+                capability: input.capability,
+                instruction: input.instruction,
+                from: input.from,
+                requestedAt,
+                expiresAt: execution.expiresAt,
+            },
+        });
+        return publicPendingExecution(execution);
     };
     const rejectValidation = (peerName, validation, rawPath, hash) => {
         logger.warn(`Rejected message from ${peerName}: ${validation.detail}`);
@@ -652,6 +728,43 @@ export function createTransport(config) {
                         return;
                     logger.debug(`Received legacy '${message.type}' message — ignoring.`);
                     break;
+                case "capability_execute":
+                    if (!approved)
+                        return;
+                    {
+                        const validation = validateCapabilityExecute(message);
+                        if (!validation.ok) {
+                            rejectValidation(peerName, validation);
+                            break;
+                        }
+                        const request = validation.value;
+                        const requestId = request.requestId || createExecutionRequestId();
+                        storePendingExecution({
+                            requestId,
+                            peerName,
+                            capability: request.capability,
+                            instruction: request.instruction,
+                            from: request.from,
+                        });
+                        logger.info(`Pending capability execution ${requestId} from ${peerName}: ${request.capability}`);
+                    }
+                    break;
+                case "capability_execute_result":
+                    if (!approved)
+                        return;
+                    {
+                        const validation = validateCapabilityExecuteResult(message);
+                        if (!validation.ok) {
+                            rejectValidation(peerName, validation);
+                            break;
+                        }
+                        completePendingExecution(validation.value.requestId, {
+                            result: validation.value.result,
+                            error: validation.value.error,
+                            from: validation.value.from || peerName,
+                        }, peerName);
+                    }
+                    break;
                 default:
                     logger.warn(`Unknown message type from ${peerName}: ${message.type}`);
             }
@@ -816,6 +929,10 @@ export function createTransport(config) {
                 request.resolve(null);
             }
             previewRequests.clear();
+            for (const [, execution] of pendingExecutions) {
+                clearTimeout(execution.timer);
+            }
+            pendingExecutions.clear();
             for (const [, conn] of connections) {
                 conn.socket.close();
             }
@@ -1068,6 +1185,13 @@ export function createTransport(config) {
                 }
             }
         },
+        broadcastNodeInfo() {
+            for (const [peerName, conn] of connections) {
+                if (conn.approved && conn.socket.readyState === 1) {
+                    sendNodeInfoToPeer(peerName);
+                }
+            }
+        },
         setNotificationHandler(handler) {
             notificationHandler = handler;
         },
@@ -1094,6 +1218,10 @@ export function createTransport(config) {
         },
         getInFlightSends(peerName) {
             const records = [...inFlightSends.values()];
+            return peerName ? records.filter((record) => record.peerName === peerName) : records;
+        },
+        getPendingExecutions(peerName) {
+            const records = [...pendingExecutions.values()].map(publicPendingExecution);
             return peerName ? records.filter((record) => record.peerName === peerName) : records;
         },
         getPeerFingerprint(peerName) {

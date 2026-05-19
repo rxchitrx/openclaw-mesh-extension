@@ -5,6 +5,7 @@ export declare const MAX_PREVIEW_CONTENT_BYTES: number;
 export declare const MAX_MANIFEST_FILES = 5000;
 export declare const MAX_PATH_LENGTH = 512;
 export declare const MAX_STRING_FIELD_LENGTH = 1024;
+export declare const MAX_CAPABILITY_INSTRUCTION_LENGTH: number;
 export type ValidationResult<T> = any;
 export type BaseMeshMessage = {
     type: string;
@@ -61,6 +62,20 @@ export type FileRejectedMessage = FilePathMessage & {
     from?: string;
     reason: string;
 };
+export type CapabilityExecuteMessage = BaseMeshMessage & {
+    type: "capability_execute";
+    requestId?: string;
+    capability: string;
+    instruction: string;
+    from: string;
+};
+export type CapabilityExecuteResultMessage = BaseMeshMessage & {
+    type: "capability_execute_result";
+    requestId: string;
+    result?: unknown;
+    error?: string;
+    from: string;
+};
 export declare function parseMeshMessage(raw: string): ValidationResult<BaseMeshMessage & Record<string, unknown>>;
 export declare function isRawMessageTooLarge(byteLength: number): boolean;
 export declare function validateApprovalResponse(message: Record<string, unknown>): ValidationResult<ApprovalResponseMessage>;
@@ -74,3 +89,5 @@ export declare function validateFilePreviewRequest(message: Record<string, unkno
 export declare function validateFilePreviewResponse(message: Record<string, unknown>): ValidationResult<FilePreviewResponseMessage>;
 export declare function validateFileApplied(message: Record<string, unknown>): ValidationResult<FileAppliedMessage>;
 export declare function validateFileRejected(message: Record<string, unknown>): ValidationResult<FileRejectedMessage>;
+export declare function validateCapabilityExecute(message: Record<string, unknown>): ValidationResult<CapabilityExecuteMessage>;
+export declare function validateCapabilityExecuteResult(message: Record<string, unknown>): ValidationResult<CapabilityExecuteResultMessage>;

@@ -5,6 +5,7 @@ export const MAX_PREVIEW_CONTENT_BYTES = 2 * 1024 * 1024;
 export const MAX_MANIFEST_FILES = 5000;
 export const MAX_PATH_LENGTH = 512;
 export const MAX_STRING_FIELD_LENGTH = 1024;
+export const MAX_CAPABILITY_INSTRUCTION_LENGTH = 16 * 1024;
 const MESH_MESSAGE_TYPES = new Set([
     "approval_request",
     "approval_response",
@@ -23,6 +24,8 @@ const MESH_MESSAGE_TYPES = new Set([
     "delta",
     "sync_request",
     "sync_response",
+    "capability_execute",
+    "capability_execute_result",
 ]);
 function isRecord(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
@@ -285,6 +288,54 @@ export function validateFileRejected(message) {
             rejectedAt: typeof message.rejectedAt === "number" && Number.isFinite(message.rejectedAt) ? message.rejectedAt : Date.now(),
             from: from.value,
             reason: reason.value || "unknown",
+        },
+    };
+}
+export function validateCapabilityExecute(message) {
+    const requestId = boundedString(message.requestId, "requestId", 128);
+    if (!requestId.ok)
+        return requestId;
+    const capability = requiredString(message.capability, "capability");
+    if (!capability.ok)
+        return capability;
+    const normalizedCapability = capability.value.trim();
+    if (!normalizedCapability)
+        return fail("invalid_message", "capability is required");
+    const instruction = requiredString(message.instruction, "instruction", MAX_CAPABILITY_INSTRUCTION_LENGTH);
+    if (!instruction.ok)
+        return instruction;
+    const from = requiredString(message.from, "from");
+    if (!from.ok)
+        return from;
+    return {
+        ok: true,
+        value: {
+            type: "capability_execute",
+            requestId: requestId.value,
+            capability: normalizedCapability,
+            instruction: instruction.value,
+            from: from.value,
+        },
+    };
+}
+export function validateCapabilityExecuteResult(message) {
+    const requestId = requiredString(message.requestId, "requestId", 128);
+    if (!requestId.ok)
+        return requestId;
+    const error = boundedString(message.error, "error", MAX_CAPABILITY_INSTRUCTION_LENGTH);
+    if (!error.ok)
+        return error;
+    const from = requiredString(message.from, "from");
+    if (!from.ok)
+        return from;
+    return {
+        ok: true,
+        value: {
+            type: "capability_execute_result",
+            requestId: requestId.value,
+            result: message.result,
+            error: error.value,
+            from: from.value,
         },
     };
 }

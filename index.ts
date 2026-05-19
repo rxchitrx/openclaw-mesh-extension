@@ -9,6 +9,7 @@ import { createMeshEventStore, summarizeMeshEvents, type MeshEventKind, type Mes
 import { createFileWatcher, type FileWatcherService, type TrackedFile } from "./src/file-watcher.js";
 import { createCapabilityRegistry } from "./src/capability-registry.js";
 import { resolveInsideRoot } from "./src/path-safety.js";
+import { createMeshAdvertiseTool } from "./src/tools/advertise.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
@@ -102,6 +103,10 @@ function mapTransportEventKind(type: TransportNotification["type"]): MeshEventKi
     case "file_conflict":
     case "conflict":
       return "conflict";
+    case "capability_execute_requested":
+      return "capability_execute_requested";
+    case "capability_execute_completed":
+      return "capability_execute_completed";
     case "file_deleted":
       return "discovery_warning";
     default:
@@ -472,6 +477,7 @@ const meshPlugin = {
 
     registerMeshTool("mesh_discover", (ctx: any) => createMeshDiscoverTool({ discovery, transport }, ctx));
     registerMeshTool("mesh_status", (ctx: any) => createMeshStatusTool({ discovery, transport, syncState, getTrackState, capabilityRegistry }, ctx));
+    registerMeshTool("mesh_advertise", (ctx: any) => createMeshAdvertiseTool({ capabilityRegistry, transport }, ctx));
     registerMeshTool("mesh_broadcast", (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_sync", (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
     registerMeshTool("mesh_track", (ctx: any) => createMeshTrackTool(getTrackState, ctx));

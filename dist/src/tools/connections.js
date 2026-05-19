@@ -12,6 +12,7 @@ export function createMeshConnectionsTool(services, _ctx) {
             const { transport, eventStore } = services;
             const connections = transport.getConnections();
             const pending = transport.getPendingConnections();
+            const pendingExecutions = transport.getPendingExecutions();
             const recentEvents = eventStore.listRecent(20);
             const now = Date.now();
             let message = `MESH CONNECTIONS\n`;
@@ -37,6 +38,7 @@ export function createMeshConnectionsTool(services, _ctx) {
                     const applied = transport.getRemoteAppliedFiles(peerName);
                     const rejected = transport.getRemoteRejectedFiles(peerName);
                     const inFlight = transport.getInFlightSends(peerName);
+                    const executions = transport.getPendingExecutions(peerName);
                     const lastEvent = recentEvents.find((event) => event.peerName === peerName);
                     message += `  ${peerName}`;
                     const fingerprint = transport.getPeerFingerprint(peerName);
@@ -58,6 +60,9 @@ export function createMeshConnectionsTool(services, _ctx) {
                     if (inFlight.length > 0) {
                         message += ` | in-flight: ${inFlight.length}`;
                     }
+                    if (executions.length > 0) {
+                        message += ` | pending executions: ${executions.length}`;
+                    }
                     if (applied.length > 0) {
                         const lastApplied = applied[applied.length - 1];
                         message += ` | last applied: ${lastApplied.path}${lastApplied.hash ? `@${lastApplied.hash.slice(0, 8)}` : ""}`;
@@ -75,6 +80,15 @@ export function createMeshConnectionsTool(services, _ctx) {
             else {
                 message += `ACTIVE CONNECTIONS\n  none\n`;
             }
+            message += `\nPENDING EXECUTIONS\n`;
+            if (pendingExecutions.length > 0) {
+                for (const execution of pendingExecutions) {
+                    message += `  ${execution.requestId} from ${execution.peerName} | ${execution.capability} | expires ${new Date(execution.expiresAt).toISOString()}\n`;
+                }
+            }
+            else {
+                message += `  none\n`;
+            }
             return {
                 content: [{ type: "text", text: message }],
                 details: {
@@ -89,6 +103,7 @@ export function createMeshConnectionsTool(services, _ctx) {
                         identityVerified: item.identityVerified,
                         fingerprintMismatch: item.fingerprintMismatch,
                     })),
+                    pendingExecutions,
                     peerState: connections.map((peerName) => ({
                         peerName,
                         fingerprint: transport.getPeerFingerprint(peerName),
@@ -97,6 +112,7 @@ export function createMeshConnectionsTool(services, _ctx) {
                         remoteAppliedFiles: transport.getRemoteAppliedFiles(peerName),
                         remoteRejectedFiles: transport.getRemoteRejectedFiles(peerName),
                         inFlightSends: transport.getInFlightSends(peerName),
+                        pendingExecutions: transport.getPendingExecutions(peerName),
                     })),
                 },
             };

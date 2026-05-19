@@ -6,6 +6,7 @@ export type TransportConfig = {
     port: number;
     syncState: SyncStateService;
     logger: any;
+    executionTimeoutMs?: number;
 };
 export type Connection = {
     peerName: string;
@@ -59,8 +60,17 @@ export type FilePreview = {
     isBinary: boolean;
     hash?: string | null;
 };
+export type PendingExecution = {
+    requestId: string;
+    peerName: string;
+    capability: string;
+    instruction: string;
+    from: string;
+    requestedAt: number;
+    expiresAt: number;
+};
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview" | "capability_execute_requested" | "capability_execute_completed";
     message: string;
     peerName?: string;
     filePath?: string;
@@ -83,12 +93,14 @@ export type TransportService = {
     requestFilePreview: (peerName: string, relativePath: string, timeoutMs?: number) => Promise<FilePreview | null>;
     sendLocalManifest: (peerName: string, manifest: TrackedFile[]) => void;
     notifyFileDeleted: (relativePath: string) => void;
+    broadcastNodeInfo: () => void;
     setNotificationHandler: (handler: (notification: TransportNotification) => void) => void;
     maintainConnections: () => Promise<void>;
     getNodeInfo: (peerName: string) => NodeInfo | null;
     getRemoteAppliedFiles: (peerName: string) => RemoteApplyRecord[];
     getRemoteRejectedFiles: (peerName: string) => RemoteRejectRecord[];
     getInFlightSends: (peerName?: string) => InFlightSendRecord[];
+    getPendingExecutions: (peerName?: string) => PendingExecution[];
     getPeerFingerprint: (peerName: string) => string | null;
     getPeerTrustWarning: (peerName: string) => string | null;
     setNodeInfoProvider: (provider: () => NodeInfo) => void;

@@ -18,7 +18,9 @@ export type MeshEventKind =
   | "sync_applied"
   | "sync_failed"
   | "conflict"
-  | "discovery_warning";
+  | "discovery_warning"
+  | "capability_execute_requested"
+  | "capability_execute_completed";
 
 export type MeshEventRecord = {
   id: string;
@@ -91,6 +93,8 @@ const VALID_EVENT_KINDS = new Set<string>([
   "sync_failed",
   "conflict",
   "discovery_warning",
+  "capability_execute_requested",
+  "capability_execute_completed",
 ]);
 const HIGH_PRIORITY = new Set<MeshEventKind>([
   "peer_pending_approval",
@@ -98,6 +102,7 @@ const HIGH_PRIORITY = new Set<MeshEventKind>([
   "sync_failed",
   "file_rejected",
   "discovery_warning",
+  "capability_execute_requested",
 ]);
 
 function createId(): string {

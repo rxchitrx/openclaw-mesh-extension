@@ -20,6 +20,7 @@ export function createMeshStatusTool(services, _ctx) {
             const eventStats = services.eventStore?.getStats();
             const recentEvents = services.eventStore?.listUnread().slice(0, 5) ?? [];
             const inFlight = transport.getInFlightSends();
+            const pendingExecutions = transport.getPendingExecutions();
             const localCapabilities = services.capabilityRegistry?.list() ?? [];
             const now = new Date().toISOString();
             let message = `MESH STATUS\n`;
@@ -112,11 +113,18 @@ export function createMeshStatusTool(services, _ctx) {
             message += `  Watched: ${watchedFiles.length}\n`;
             message += `  Pending changes: ${pendingChanges.length}\n`;
             message += `  In-flight sends: ${inFlight.length}\n`;
+            message += `  Pending executions: ${pendingExecutions.length}\n`;
             if (pendingChanges.length > 0) {
                 message += `  Pending files: ${pendingChanges.map((change) => change.relativePath).join(", ")}\n`;
             }
+            if (pendingExecutions.length > 0) {
+                message += `  Pending execution requests:\n`;
+                for (const execution of pendingExecutions) {
+                    message += `    ${execution.requestId} from ${execution.peerName}: ${execution.capability} (expires ${new Date(execution.expiresAt).toISOString()})\n`;
+                }
+            }
             const health = connections.length > 0 ? "HEALTHY" : (peers.length > 0 ? "PARTIAL" : "STANDALONE");
-            message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 && inFlight.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING / ${inFlight.length} IN-FLIGHT`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}\n`;
+            message += `\nSUMMARY: ${health} | ${connections.length > 0 ? "MESH" : "STANDALONE"} | ${pendingChanges.length === 0 && inFlight.length === 0 ? "IN SYNC" : `${pendingChanges.length} PENDING / ${inFlight.length} IN-FLIGHT`}${pending.length > 0 ? ` | ${pending.length} PENDING APPROVAL` : ""}${pendingExecutions.length > 0 ? ` | ${pendingExecutions.length} PENDING EXECUTION` : ""}\n`;
             return {
                 content: [{ type: "text", text: message }],
                 details: {
@@ -135,6 +143,7 @@ export function createMeshStatusTool(services, _ctx) {
                         watchedFiles: watchedFiles.length,
                         pendingChanges: pendingChanges.length,
                         inFlightSends: inFlight.length,
+                        pendingExecutions: pendingExecutions.length,
                         health,
                         timestamp: now,
                     },

@@ -13,6 +13,8 @@
     "test:path-safety": "node scripts/test-path-safety.mjs",
     "test:protocol": "node scripts/test-protocol-validation.mjs",
     "test:capabilities": "node scripts/test-capability-registry.mjs",
+    "test:advertise": "node scripts/test-advertise-tool.mjs",
+    "test:capability-execution": "node scripts/test-capability-execution.mjs",
     "test:identity": "node scripts/test-peer-identity.mjs",
     "test:approval": "node scripts/test-approval-flow.mjs",
     "test:notifications": "node scripts/test-urgent-notifications.mjs",

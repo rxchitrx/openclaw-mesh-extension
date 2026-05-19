@@ -1,4 +1,4 @@
-export type MeshEventKind = "peer_discovered" | "peer_pending_approval" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "manifest_received" | "sync_requested" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "sync_applied" | "sync_failed" | "conflict" | "discovery_warning";
+export type MeshEventKind = "peer_discovered" | "peer_pending_approval" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "manifest_received" | "sync_requested" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "sync_applied" | "sync_failed" | "conflict" | "discovery_warning" | "capability_execute_requested" | "capability_execute_completed";
 export type MeshEventRecord = {
     id: string;
     kind: MeshEventKind;

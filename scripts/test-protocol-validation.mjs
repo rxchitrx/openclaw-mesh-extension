@@ -15,6 +15,8 @@ import {
   validateFilePreviewResponse,
   validateFileRejected,
   validateManifest,
+  validateCapabilityExecute,
+  validateCapabilityExecuteResult,
 } from "../dist/src/protocol-validation.js";
 
 const validManifest = validateManifest({
@@ -72,7 +74,42 @@ assert.equal(validateFileApplied({ type: "file_applied", path: "src/index.ts", h
 assert.equal(validateFileRejected({ type: "file_rejected", path: "src/index.ts", reason: "conflict" }).ok, true);
 assert.equal(validateFilePathMessage({ type: "file_deleted", path: "src/index.ts" }, "file_deleted").ok, true);
 
+const validCapabilityExecute = validateCapabilityExecute({
+  type: "capability_execute",
+  requestId: "exec-1",
+  capability: "can:run-tests",
+  instruction: "Run the focused test suite",
+  from: "node-a",
+});
+assert.equal(validCapabilityExecute.ok, true);
+assert.equal(validCapabilityExecute.value.requestId, "exec-1");
+assert.equal(validCapabilityExecute.value.capability, "can:run-tests");
+
+const validCapabilityExecuteWithoutRequestId = validateCapabilityExecute({
+  type: "capability_execute",
+  capability: "can:lint",
+  instruction: "Lint the project",
+  from: "node-a",
+});
+assert.equal(validCapabilityExecuteWithoutRequestId.ok, true);
+assert.equal(validCapabilityExecuteWithoutRequestId.value.requestId, undefined);
+
+const validCapabilityResult = validateCapabilityExecuteResult({
+  type: "capability_execute_result",
+  requestId: "exec-1",
+  result: { ok: true },
+  from: "node-b",
+});
+assert.equal(validCapabilityResult.ok, true);
+assert.deepEqual(validCapabilityResult.value.result, { ok: true });
+
+assert.equal(validateCapabilityExecute({ type: "capability_execute", capability: "", instruction: "x", from: "node-a" }).ok, false);
+assert.equal(validateCapabilityExecute({ type: "capability_execute", capability: "can:test", instruction: "", from: "node-a" }).ok, false);
+assert.equal(validateCapabilityExecuteResult({ type: "capability_execute_result", result: "ok", from: "node-b" }).ok, false);
+
 assert.equal(parseMeshMessage(JSON.stringify({ type: "mystery" })).ok, false);
+assert.equal(parseMeshMessage(JSON.stringify({ type: "capability_execute", capability: "can:test", instruction: "run", from: "node-a" })).ok, true);
+assert.equal(parseMeshMessage(JSON.stringify({ type: "capability_execute_result", requestId: "exec-1", from: "node-b" })).ok, true);
 assert.equal(parseMeshMessage(JSON.stringify({ type: "identity_challenge", nonce: "abc" })).ok, true);
 assert.equal(parseMeshMessage(JSON.stringify({ type: "identity_proof", signature: "abc" })).ok, true);
 assert.equal(parseMeshMessage("{").ok, false);

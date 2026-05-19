@@ -9,6 +9,7 @@
     "tools": [
       "mesh_discover",
       "mesh_status",
+      "mesh_advertise",
       "mesh_broadcast",
       "mesh_sync",
       "mesh_track",

@@ -22,6 +22,8 @@ const VALID_EVENT_KINDS = new Set([
     "sync_failed",
     "conflict",
     "discovery_warning",
+    "capability_execute_requested",
+    "capability_execute_completed",
 ]);
 const HIGH_PRIORITY = new Set([
     "peer_pending_approval",
@@ -29,6 +31,7 @@ const HIGH_PRIORITY = new Set([
     "sync_failed",
     "file_rejected",
     "discovery_warning",
+    "capability_execute_requested",
 ]);
 function createId() {
     return `mesh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

@@ -7,6 +7,7 @@ export const MAX_PREVIEW_CONTENT_BYTES = 2 * 1024 * 1024;
 export const MAX_MANIFEST_FILES = 5000;
 export const MAX_PATH_LENGTH = 512;
 export const MAX_STRING_FIELD_LENGTH = 1024;
+export const MAX_CAPABILITY_INSTRUCTION_LENGTH = 16 * 1024;
 
 const MESH_MESSAGE_TYPES = new Set([
   "approval_request",
@@ -26,6 +27,8 @@ const MESH_MESSAGE_TYPES = new Set([
   "delta",
   "sync_request",
   "sync_response",
+  "capability_execute",
+  "capability_execute_result",
 ]);
 
 export type ValidationResult<T> = any;
@@ -93,6 +96,22 @@ export type FileRejectedMessage = FilePathMessage & {
   rejectedAt: number;
   from?: string;
   reason: string;
+};
+
+export type CapabilityExecuteMessage = BaseMeshMessage & {
+  type: "capability_execute";
+  requestId?: string;
+  capability: string;
+  instruction: string;
+  from: string;
+};
+
+export type CapabilityExecuteResultMessage = BaseMeshMessage & {
+  type: "capability_execute_result";
+  requestId: string;
+  result?: unknown;
+  error?: string;
+  from: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -348,6 +367,48 @@ export function validateFileRejected(message: Record<string, unknown>): Validati
       rejectedAt: typeof message.rejectedAt === "number" && Number.isFinite(message.rejectedAt) ? message.rejectedAt : Date.now(),
       from: from.value,
       reason: reason.value || "unknown",
+    },
+  };
+}
+
+export function validateCapabilityExecute(message: Record<string, unknown>): ValidationResult<CapabilityExecuteMessage> {
+  const requestId = boundedString(message.requestId, "requestId", 128);
+  if (!requestId.ok) return requestId;
+  const capability = requiredString(message.capability, "capability");
+  if (!capability.ok) return capability;
+  const normalizedCapability = capability.value.trim();
+  if (!normalizedCapability) return fail("invalid_message", "capability is required");
+  const instruction = requiredString(message.instruction, "instruction", MAX_CAPABILITY_INSTRUCTION_LENGTH);
+  if (!instruction.ok) return instruction;
+  const from = requiredString(message.from, "from");
+  if (!from.ok) return from;
+  return {
+    ok: true,
+    value: {
+      type: "capability_execute",
+      requestId: requestId.value,
+      capability: normalizedCapability,
+      instruction: instruction.value,
+      from: from.value,
+    },
+  };
+}
+
+export function validateCapabilityExecuteResult(message: Record<string, unknown>): ValidationResult<CapabilityExecuteResultMessage> {
+  const requestId = requiredString(message.requestId, "requestId", 128);
+  if (!requestId.ok) return requestId;
+  const error = boundedString(message.error, "error", MAX_CAPABILITY_INSTRUCTION_LENGTH);
+  if (!error.ok) return error;
+  const from = requiredString(message.from, "from");
+  if (!from.ok) return from;
+  return {
+    ok: true,
+    value: {
+      type: "capability_execute_result",
+      requestId: requestId.value,
+      result: message.result,
+      error: error.value,
+      from: from.value,
     },
   };
 }
