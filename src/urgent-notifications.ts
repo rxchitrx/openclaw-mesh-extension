@@ -6,6 +6,11 @@ export const URGENT_MESH_EVENT_KINDS = new Set<MeshEventKind>([
   "peer_disconnected",
   "sync_failed",
   "file_rejected",
+  "peer_approved",
+  "peer_denied",
+  "file_sent",
+  "file_received",
+  "discovery_warning",
 ]);
 
 export type HeartbeatWakeRequest = {
@@ -66,6 +71,22 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function peerApprovalDirectionLabel(event: MeshEventRecord): string {
+  const direction = event.details?.direction;
+  if (direction === "inbound") {
+    return `Peer '${event.peerName ?? "Unknown"}' approved your connection request. Tell the user.`;
+  }
+  return `You approved peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+}
+
+function peerDenialDirectionLabel(event: MeshEventRecord): string {
+  const direction = event.details?.direction;
+  if (direction === "inbound") {
+    return `Peer '${event.peerName ?? "Unknown"}' denied your connection request. Tell the user.`;
+  }
+  return `You denied peer '${event.peerName ?? "Unknown"}'. Tell the user.`;
+}
+
 export function formatUrgentMeshSystemEvent(event: MeshEventRecord): string {
   const fingerprint = asString(event.details?.fingerprint);
   const host = asString(event.details?.host);
@@ -76,9 +97,30 @@ export function formatUrgentMeshSystemEvent(event: MeshEventRecord): string {
   const mismatchLabel = mismatch
     ? " WARNING: possible impersonation because this peer name matches a trusted peer but the fingerprint changed."
     : "";
+  const filePath = event.filePath ? ` '${event.filePath}'` : "";
 
   if (event.kind === "peer_pending_approval") {
     return `[mesh] Mesh approval needed: peer${peerLabel}${hostLabel} wants to connect.${fingerprintLabel}${mismatchLabel} Tell the user immediately and ask whether to approve or deny. Do not approve or deny without the user's decision.`;
+  }
+
+  if (event.kind === "peer_approved") {
+    return `[mesh] ${peerApprovalDirectionLabel(event)}`;
+  }
+
+  if (event.kind === "peer_denied") {
+    return `[mesh] ${peerDenialDirectionLabel(event)}`;
+  }
+
+  if (event.kind === "file_sent") {
+    return `[mesh] Sent file${filePath} to peer${peerLabel}. Tell the user.`;
+  }
+
+  if (event.kind === "file_received") {
+    return `[mesh] Received file${filePath} from peer${peerLabel}. Tell the user.`;
+  }
+
+  if (event.kind === "discovery_warning") {
+    return `[mesh] Warning: ${event.message} Tell the user immediately in plain language.`;
   }
 
   return `[mesh] Urgent mesh event: ${event.message} Tell the user immediately in plain language.`;
@@ -89,6 +131,7 @@ export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
   const host = asString(event.details?.host);
   const mismatch = event.details?.fingerprintMismatch === true;
   const peer = event.peerName ?? "Unknown peer";
+  const direction = event.details?.direction;
 
   if (event.kind === "peer_pending_approval") {
     return [
@@ -104,6 +147,34 @@ export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
       "",
       "Reply with `approve` to accept it, or `deny` to reject it.",
     ].filter((line): line is string => line !== null).join("\n");
+  }
+
+  if (event.kind === "peer_approved") {
+    if (direction === "inbound") {
+      return `**Connection approved**\n\nPeer \`${peer}\` approved your connection request.`;
+    }
+    return `**Peer approved**\n\nYou approved peer \`${peer}\`.`;
+  }
+
+  if (event.kind === "peer_denied") {
+    if (direction === "inbound") {
+      return `**Connection denied**\n\nPeer \`${peer}\` denied your connection request.`;
+    }
+    return `**Peer denied**\n\nYou denied peer \`${peer}\`.`;
+  }
+
+  if (event.kind === "file_sent") {
+    const filePath = event.filePath ? ` \`${event.filePath}\`` : "";
+    return `**File sent**\n\nSent${filePath} to peer \`${peer}\`.`;
+  }
+
+  if (event.kind === "file_received") {
+    const filePath = event.filePath ? ` \`${event.filePath}\`` : "";
+    return `**File received**\n\nReceived${filePath} from peer \`${peer}\`.`;
+  }
+
+  if (event.kind === "discovery_warning") {
+    return `**Discovery warning**\n\n${event.message}`;
   }
 
   return `**Urgent mesh event**\n\n${event.message}`;

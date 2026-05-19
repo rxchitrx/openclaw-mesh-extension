@@ -341,7 +341,7 @@ export function createTransport(config: TransportConfig): TransportService {
           type: "peer_approved",
           message: `Auto-approved trusted peer '${peerName}' (${fingerprint}).`,
           peerName,
-          data: { fingerprint, identityVerified: true },
+          data: { fingerprint, identityVerified: true, direction: "outbound" },
         });
         exchangePeerState(promoted.peerName);
       } else {
@@ -435,7 +435,7 @@ export function createTransport(config: TransportConfig): TransportService {
                 type: "peer_approved",
                 message: `Peer '${peerName}' (${pending.fingerprint}) approved your connection request.`,
                 peerName,
-                data: { fingerprint: pending.fingerprint, identityVerified: true },
+                data: { fingerprint: pending.fingerprint, identityVerified: true, direction: "inbound" },
               });
               exchangePeerState(peerName);
             }
@@ -452,6 +452,7 @@ export function createTransport(config: TransportConfig): TransportService {
                 type: "peer_denied",
                 message: `Peer '${peerName}' denied your connection request.`,
                 peerName,
+                data: { direction: "inbound" },
               });
             }
           }
@@ -1120,7 +1121,7 @@ export function createTransport(config: TransportConfig): TransportService {
         type: "peer_approved",
         message: `Approved peer '${peerName}' (${pending.fingerprint}). Info will be exchanged.`,
         peerName,
-        data: { fingerprint: pending.fingerprint, identityVerified: true },
+        data: { fingerprint: pending.fingerprint, identityVerified: true, direction: "outbound" },
       });
       exchangePeerState(peerName);
 
@@ -1149,6 +1150,7 @@ export function createTransport(config: TransportConfig): TransportService {
         type: "peer_denied",
         message: `Denied peer '${peerName}'.`,
         peerName,
+        data: { direction: "outbound" },
       });
 
       return true;

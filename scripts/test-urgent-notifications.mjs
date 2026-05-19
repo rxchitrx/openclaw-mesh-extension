@@ -18,6 +18,11 @@ assert.equal(isUrgentMeshEvent("peer_pending_approval"), true);
 assert.equal(isUrgentMeshEvent("peer_disconnected"), true);
 assert.equal(isUrgentMeshEvent("sync_failed"), true);
 assert.equal(isUrgentMeshEvent("file_rejected"), true);
+assert.equal(isUrgentMeshEvent("peer_approved"), true);
+assert.equal(isUrgentMeshEvent("peer_denied"), true);
+assert.equal(isUrgentMeshEvent("file_sent"), true);
+assert.equal(isUrgentMeshEvent("file_received"), true);
+assert.equal(isUrgentMeshEvent("discovery_warning"), true);
 assert.equal(isUrgentMeshEvent("manifest_received"), false);
 assert.equal(isUrgentMeshEvent("peer_connected"), false);
 
@@ -111,6 +116,94 @@ const formattedMismatch = formatUrgentMeshSystemEvent({
   details: { host: "192.168.29.11", fingerprint: "EEEE-FFFF-0000", fingerprintMismatch: true },
 });
 assert.match(formattedMismatch, /possible impersonation/i);
+
+const approvedOutboundSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-9", kind: "peer_approved",
+  details: { direction: "outbound" },
+});
+assert.match(approvedOutboundSystemText, /You approved peer/);
+
+const approvedOutboundChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-10", kind: "peer_approved",
+  details: { direction: "outbound" },
+});
+assert.match(approvedOutboundChatText, /You approved peer/);
+
+const approvedInboundSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-11", kind: "peer_approved",
+  details: { direction: "inbound" },
+});
+assert.match(approvedInboundSystemText, /approved your connection/);
+
+const approvedInboundChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-12", kind: "peer_approved",
+  details: { direction: "inbound" },
+});
+assert.match(approvedInboundChatText, /approved your connection/);
+
+const deniedOutboundSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-13", kind: "peer_denied",
+  details: { direction: "outbound" },
+});
+assert.match(deniedOutboundSystemText, /You denied peer/);
+
+const deniedOutboundChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-14", kind: "peer_denied",
+  details: { direction: "outbound" },
+});
+assert.match(deniedOutboundChatText, /You denied peer/);
+
+const deniedInboundSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-15", kind: "peer_denied",
+  details: { direction: "inbound" },
+});
+assert.match(deniedInboundSystemText, /denied your connection/);
+
+const deniedInboundChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-16", kind: "peer_denied",
+  details: { direction: "inbound" },
+});
+assert.match(deniedInboundChatText, /denied your connection/);
+
+const fileSentSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-17", kind: "file_sent",
+  peerName: "node-b",
+  filePath: "src/foo.ts",
+});
+assert.match(fileSentSystemText, /Sent file/);
+
+const fileSentChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-18", kind: "file_sent",
+  peerName: "node-b",
+  filePath: "src/foo.ts",
+});
+assert.match(fileSentChatText, /File sent/i);
+
+const fileReceivedSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-19", kind: "file_received",
+  peerName: "node-b",
+  filePath: "src/bar.ts",
+});
+assert.match(fileReceivedSystemText, /Received file/);
+
+const fileReceivedChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-20", kind: "file_received",
+  peerName: "node-b",
+  filePath: "src/bar.ts",
+});
+assert.match(fileReceivedChatText, /File received/i);
+
+const discoveryWarningSystemText = formatUrgentMeshSystemEvent({
+  ...pendingEvent, id: "evt-21", kind: "discovery_warning",
+  message: "Network issue detected.",
+});
+assert.match(discoveryWarningSystemText, /discovery_warning|Warning/i);
+
+const discoveryWarningChatText = formatUrgentMeshChatMessage({
+  ...pendingEvent, id: "evt-22", kind: "discovery_warning",
+  message: "Network issue detected.",
+});
+assert.match(discoveryWarningChatText, /Discovery warning/i);
 
 const chatMessage = formatUrgentMeshChatMessage(pendingEvent);
 assert.match(chatMessage, /Mesh approval needed/);
