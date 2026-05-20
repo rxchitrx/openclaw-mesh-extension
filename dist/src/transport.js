@@ -7,6 +7,7 @@ import { createShadowStore } from "./shadow-store.js";
 import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateCapabilityExecute, validateCapabilityExecuteResult, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
 import { checkTrustedPeer, createNonce, decodePublicKeyFromWire, encodePublicKeyForWire, loadOrCreateIdentity, signIdentityChallenge, touchTrustedPeer, trustPeer, verifyIdentityProof, } from "./peer-identity.js";
 import * as zlib from "zlib";
+import { WebSocketTransport } from "./transport/websocket-transport.js";
 // Shadow store: persists last-sent file content to disk (keyed by hash) so we
 // can generate patches locally without asking the peer for their copy.
 const shadowStore = createShadowStore();
@@ -163,11 +164,11 @@ export function createTransport(config) {
             rejectedAt: Date.now(),
         });
     };
-    const sendIdentityChallenge = (peerName, socket) => {
+    const sendIdentityChallenge = (peerName, transport) => {
         const nonce = createNonce();
         challengeNonces.set(peerName, nonce);
-        if (socket.readyState === 1) {
-            socket.send(JSON.stringify({
+        if (transport.isOpen()) {
+            transport.send(JSON.stringify({
                 type: "identity_challenge",
                 nonce,
                 node: nodeName,
@@ -220,7 +221,7 @@ export function createTransport(config) {
     const promotePendingConnection = (peerName, pending, approved) => {
         const conn = {
             peerName,
-            socket: pending.socket,
+            transport: pending.transport,
             isAlive: true,
             approved,
             fingerprint: pending.fingerprint,
@@ -367,7 +368,7 @@ export function createTransport(config) {
                                     logger.warn(`Ignoring denial response on inbound approval decision for peer: ${peerName}`);
                                     break;
                                 }
-                                pending.socket.close();
+                                pending.transport.close();
                                 pendingConnections.delete(peerName);
                                 notify({
                                     type: "peer_denied",
@@ -974,26 +975,24 @@ export function createTransport(config) {
     };
     const sendToPeer = (peerName, message) => {
         const conn = connections.get(peerName);
-        if (conn && conn.socket.readyState === 1) {
-            conn.socket.send(JSON.stringify(message));
-            return;
+        if (conn && conn.transport.isOpen()) {
+            conn.transport.send(JSON.stringify(message));
         }
         const pending = pendingConnections.get(peerName);
-        if (pending && pending.socket.readyState === 1) {
-            pending.socket.send(JSON.stringify(message));
+        if (pending && pending.transport.isOpen()) {
+            pending.transport.send(JSON.stringify(message));
         }
     };
-    const setupSocket = (socket, peerName, isIncoming) => {
-        socket.on("message", (data) => {
-            if (isRawMessageTooLarge(data.length)) {
-                logger.warn(`Rejected oversized raw message from ${peerName}: ${data.length} bytes`);
+    const setupTransport = (transport, peerName, isIncoming) => {
+        transport.onMessage((raw) => {
+            if (isRawMessageTooLarge(Buffer.byteLength(raw))) {
+                logger.warn(`[${transport.type.toUpperCase()}] Rejected oversized raw message from ${peerName}: ${Buffer.byteLength(raw)} bytes`);
                 notifyInvalidMessage(peerName, "raw message exceeds limit");
                 return;
             }
-            const raw = data.toString();
             if (raw === "__ping__") {
-                if (socket.readyState === 1)
-                    socket.send("__pong__");
+                if (transport.isOpen())
+                    transport.send("__pong__");
                 return;
             }
             if (raw === "__pong__") {
@@ -1013,7 +1012,7 @@ export function createTransport(config) {
                 }
             }
         });
-        socket.on("close", () => {
+        transport.onDisconnect(() => {
             pendingConnections.delete(peerName);
             if (connections.has(peerName)) {
                 connections.delete(peerName);
@@ -1023,10 +1022,10 @@ export function createTransport(config) {
                     peerName,
                 });
             }
-            logger.info(`Peer disconnected: ${peerName} (${connections.size} remaining)`);
+            logger.info(`[${transport.type.toUpperCase()}] Peer disconnected: ${peerName} (${connections.size} remaining)`);
         });
-        socket.on("error", (err) => {
-            logger.error(`Connection error with ${peerName}: ${err}`);
+        transport.onError((err) => {
+            logger.error(`[${transport.type.toUpperCase()}] Connection error with ${peerName}: ${err}`);
             pendingConnections.delete(peerName);
             connections.delete(peerName);
         });
@@ -1037,23 +1036,24 @@ export function createTransport(config) {
                 const { WebSocketServer } = await import("ws");
                 server = new WebSocketServer({ port });
                 server.on("connection", (socket, req) => {
+                    const transport = new WebSocketTransport(socket);
                     const peerName = req.headers["x-mesh-node"] || "unknown";
                     const host = normalizePeerHost(req.socket.remoteAddress || "unknown");
-                    logger.info(`Incoming connection from: ${peerName} at ${host}`);
+                    logger.info(`[LAN] Incoming connection from: ${peerName} at ${host}`);
                     if (peerName === nodeName) {
                         logger.warn(`Rejecting self mesh connection from ${peerName} at ${host}`);
-                        socket.close();
+                        transport.close();
                         return;
                     }
                     const alreadyConnected = connections.has(peerName);
                     if (alreadyConnected) {
                         const old = connections.get(peerName);
-                        old.socket.close();
+                        old.transport.close();
                         connections.delete(peerName);
                     }
                     const pending = {
                         peerName,
-                        socket,
+                        transport,
                         host,
                         connectedAt: Date.now(),
                         direction: "incoming",
@@ -1062,15 +1062,15 @@ export function createTransport(config) {
                         identityVerified: false,
                     };
                     pendingConnections.set(peerName, pending);
-                    setupSocket(socket, peerName, true);
-                    sendIdentityChallenge(peerName, socket);
+                    setupTransport(transport, peerName, true);
+                    sendIdentityChallenge(peerName, transport);
                 });
                 logger.info(`Mesh transport server started on port ${port}`);
                 keepaliveTimer = setInterval(() => {
                     for (const [name, conn] of connections) {
                         if (!conn.isAlive) {
                             logger.warn(`Peer ${name} missed ping, closing connection`);
-                            conn.socket.terminate();
+                            conn.transport.close();
                             connections.delete(name);
                             notify({
                                 type: "peer_disconnected",
@@ -1080,8 +1080,8 @@ export function createTransport(config) {
                             continue;
                         }
                         conn.isAlive = false;
-                        if (conn.socket.readyState === 1) {
-                            conn.socket.send("__ping__");
+                        if (conn.transport.isOpen()) {
+                            conn.transport.send("__ping__");
                         }
                     }
                 }, PING_INTERVAL_MS);
@@ -1106,11 +1106,11 @@ export function createTransport(config) {
             }
             pendingExecutions.clear();
             for (const [, conn] of connections) {
-                conn.socket.close();
+                conn.transport.close();
             }
             connections.clear();
             for (const [, pending] of pendingConnections) {
-                pending.socket.close();
+                pending.transport.close();
             }
             pendingConnections.clear();
             if (server) {
@@ -1143,18 +1143,19 @@ export function createTransport(config) {
                 });
                 await new Promise((resolve, reject) => {
                     ws.on("open", () => {
+                        const transport = new WebSocketTransport(ws);
                         const pending = {
                             peerName: peer.name,
-                            socket: ws,
+                            transport,
                             host: normalizedHost,
                             connectedAt: Date.now(),
                             direction: "outgoing",
                             identityVerified: false,
                         };
                         pendingConnections.set(peer.name, pending);
-                        setupSocket(ws, peer.name, false);
-                        sendIdentityChallenge(peer.name, ws);
-                        logger.info(`Connected to peer (awaiting identity proof): ${peer.name} at ${normalizedHost}:${peer.port}`);
+                        setupTransport(transport, peer.name, false);
+                        sendIdentityChallenge(peer.name, transport);
+                        logger.info(`[LAN] Connected to peer (awaiting identity proof): ${peer.name} at ${normalizedHost}:${peer.port}`);
                         resolve();
                     });
                     ws.on("error", (err) => {
@@ -1173,8 +1174,8 @@ export function createTransport(config) {
             const data = JSON.stringify(message);
             let sent = 0;
             for (const [, conn] of connections) {
-                if (conn.approved && conn.socket.readyState === 1) {
-                    conn.socket.send(data);
+                if (conn.approved && conn.transport.isOpen()) {
+                    conn.transport.send(data);
                     sent++;
                 }
             }
@@ -1230,7 +1231,7 @@ export function createTransport(config) {
                 approved: false,
                 node: nodeName,
             });
-            pending.socket.close();
+            pending.transport.close();
             pendingConnections.delete(peerName);
             logger.info(`Denied peer: ${peerName}`);
             notify({
@@ -1418,7 +1419,7 @@ export function createTransport(config) {
                 return Promise.resolve(null);
             }
             const conn = connections.get(peerName);
-            if (!conn || !conn.approved || conn.socket.readyState !== 1) {
+            if (!conn || !conn.approved || !conn.transport.isOpen()) {
                 return Promise.resolve(null);
             }
             const requestId = `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1464,14 +1465,14 @@ export function createTransport(config) {
             const msg = { type: "file_deleted", path: safeRelativePath, from: nodeName };
             const data = JSON.stringify(msg);
             for (const [, conn] of connections) {
-                if (conn.approved && conn.socket.readyState === 1) {
-                    conn.socket.send(data);
+                if (conn.approved && conn.transport.isOpen()) {
+                    conn.transport.send(data);
                 }
             }
         },
         broadcastNodeInfo() {
             for (const [peerName, conn] of connections) {
-                if (conn.approved && conn.socket.readyState === 1) {
+                if (conn.approved && conn.transport.isOpen()) {
                     sendNodeInfoToPeer(peerName);
                 }
             }
@@ -1481,7 +1482,7 @@ export function createTransport(config) {
         },
         async maintainConnections() {
             for (const [name, conn] of connections) {
-                if (conn.socket.readyState === 3) {
+                if (!conn.transport.isOpen()) {
                     connections.delete(name);
                     notify({
                         type: "peer_disconnected",
@@ -1510,7 +1511,7 @@ export function createTransport(config) {
         },
         sendCapabilityExecute(peerName, capability, instruction, requestId) {
             const conn = connections.get(peerName);
-            if (!conn?.approved || conn.socket.readyState !== 1) {
+            if (!conn?.approved || !conn.transport.isOpen()) {
                 logger.warn(`Cannot send capability execution to '${peerName}': peer is not connected and approved.`);
                 return null;
             }
@@ -1539,7 +1540,7 @@ export function createTransport(config) {
                 return false;
             }
             const conn = connections.get(execution.peerName);
-            if (!conn?.approved || conn.socket.readyState !== 1) {
+            if (!conn?.approved || !conn.transport.isOpen()) {
                 logger.warn(`Cannot respond to capability execution '${requestId}': peer '${execution.peerName}' is not connected and approved.`);
                 return false;
             }

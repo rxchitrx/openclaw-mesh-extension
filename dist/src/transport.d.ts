@@ -1,6 +1,7 @@
 import type { SyncStateService } from "./sync-state.js";
 import { type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
+import type { PeerTransport } from "./transport/peer-transport.js";
 export type TransportConfig = {
     nodeName: string;
     port: number;
@@ -10,7 +11,7 @@ export type TransportConfig = {
 };
 export type Connection = {
     peerName: string;
-    socket: any;
+    transport: PeerTransport;
     isAlive: boolean;
     approved: boolean;
     fingerprint?: string;
@@ -19,7 +20,7 @@ export type Connection = {
 };
 export type PendingConnection = {
     peerName: string;
-    socket: any;
+    transport: PeerTransport;
     host: string;
     connectedAt: number;
     direction: "incoming" | "outgoing";
