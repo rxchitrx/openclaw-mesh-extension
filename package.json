@@ -9,7 +9,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "test:diff": "node scripts/test-diff.mjs"
+    "test:diff": "node scripts/test-diff.mjs",
+    "test:patch": "node scripts/test-patch-sync.mjs"
   },
   "dependencies": {
     "@homebridge/ciao": "^1.3.6",

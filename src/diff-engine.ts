@@ -183,3 +183,12 @@ export function createDiffPreview(options: DiffPreviewOptions): DiffPreview {
             : `Text file '${options.path}' differs.`,
   };
 }
+
+export function createPatchPayload(path: string, oldText: string, newText: string, parentHash: string, targetHash: string, contextLines = 3) {
+  const patch = unifiedPatch(path, oldText, newText, contextLines);
+  return {
+    patch,
+    parentHash,
+    targetHash,
+  };
+}

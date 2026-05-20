@@ -22,3 +22,8 @@ export type DiffPreview = {
     summary: string;
 };
 export declare function createDiffPreview(options: DiffPreviewOptions): DiffPreview;
+export declare function createPatchPayload(path: string, oldText: string, newText: string, parentHash: string, targetHash: string, contextLines?: number): {
+    patch: string;
+    parentHash: string;
+    targetHash: string;
+};

@@ -51,7 +51,7 @@ export type FilePreview = {
     hash?: string | null;
 };
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview" | "file_patch";
     message: string;
     peerName?: string;
     filePath?: string;
@@ -69,7 +69,8 @@ export type TransportService = {
     denyConnection: (peerName: string) => boolean;
     getRemoteManifest: (peerName: string) => TrackedFile[] | null;
     requestManifest: (peerName: string) => void;
-    sendFileContent: (peerName: string, relativePath: string, content: string, isBinary: boolean) => void;
+    sendFileContent: (peerName: string, relativePath: string, content: string, isBinary: boolean) => Promise<void>;
+    sendFilePatch: (peerName: string, relativePath: string, patch: string, parentHash: string, targetHash: string) => void;
     requestFileContent: (peerName: string, relativePath: string) => void;
     requestFilePreview: (peerName: string, relativePath: string, timeoutMs?: number) => Promise<FilePreview | null>;
     sendLocalManifest: (peerName: string, manifest: TrackedFile[]) => void;
