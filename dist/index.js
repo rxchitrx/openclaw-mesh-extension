@@ -61,6 +61,7 @@ function mapTransportEventKind(type) {
         case "sync_failed":
             return "sync_failed";
         case "file_sent":
+        case "file_patch":
             return "file_sent";
         case "file_received":
             return "file_received";

@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "test:diff": "node scripts/test-diff.mjs",
+    "test:patch": "node scripts/test-diff.mjs",
     "test:path-safety": "node scripts/test-path-safety.mjs",
     "test:protocol": "node scripts/test-protocol-validation.mjs",
     "test:capabilities": "node scripts/test-capability-registry.mjs",

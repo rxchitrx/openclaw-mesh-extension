@@ -2,6 +2,7 @@ import { isLocalIPv4Address, normalizePeerHost } from "./discovery.js";
 import { normalizeRelativePath } from "./path-safety.js";
 import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateCapabilityExecute, validateCapabilityExecuteResult, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
 import { checkTrustedPeer, createNonce, decodePublicKeyFromWire, encodePublicKeyForWire, loadOrCreateIdentity, signIdentityChallenge, touchTrustedPeer, trustPeer, verifyIdentityProof, } from "./peer-identity.js";
+import * as zlib from "zlib";
 export function createTransport(config) {
     const { nodeName, port, syncState, logger } = config;
     const executionTimeoutMs = config.executionTimeoutMs ?? 60000;
@@ -27,6 +28,12 @@ export function createTransport(config) {
     let notificationHandler = null;
     let keepaliveTimer = null;
     const PING_INTERVAL_MS = 30000;
+    const syncStats = {
+        patchSyncs: 0,
+        fallbackFullSyncs: 0,
+        patchBytesOriginal: 0,
+        patchBytesCompressed: 0,
+    };
     const notify = (notification) => {
         if (notificationHandler) {
             notificationHandler(notification);
@@ -492,6 +499,98 @@ export function createTransport(config) {
                             filePath,
                             data: { file: filePath, isBinary },
                         });
+                    }
+                    break;
+                case "file_patch":
+                    if (!approved)
+                        return;
+                    {
+                        const { path: rawPath, patch: rawPatch, parentHash, targetHash, from, compressed } = message;
+                        const safePath = normalizeRelativePath(typeof rawPath === "string" ? rawPath : "");
+                        if (!safePath || !parentHash || !targetHash || !rawPatch) {
+                            logger.warn(`Received invalid file_patch payload for ${invalidPathLabel(rawPath)} from ${peerName}`);
+                            break;
+                        }
+                        let patch = rawPatch;
+                        if (compressed) {
+                            try {
+                                patch = zlib.gunzipSync(Buffer.from(rawPatch, "base64")).toString("utf-8");
+                            }
+                            catch (err) {
+                                logger.error(`Failed to decompress patch for ${safePath}: ${err}`);
+                                syncStats.fallbackFullSyncs++;
+                                logger.info(`Fallback full sync requested for ${safePath} from ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+                                sendToPeer(peerName, {
+                                    type: "file_content_request",
+                                    path: safePath,
+                                    from: nodeName,
+                                });
+                                break;
+                            }
+                        }
+                        logger.info(`Received patch for ${safePath} from ${peerName} (parent: ${parentHash}, target: ${targetHash})`);
+                        if (syncState.isConflict(safePath, parentHash) && !syncState.consumeForceAllow(safePath)) {
+                            logger.warn(`Conflict: ${safePath} — local has modifications and remote has different version. Keeping local.`);
+                            sendFileRejected(peerName, safePath, "conflict", targetHash);
+                            notify({
+                                type: "file_conflict",
+                                message: `Conflict on '${safePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${safePath} from ${peerName}' to override.`,
+                                peerName,
+                                filePath: safePath,
+                                data: { file: safePath, remotePeer: peerName },
+                            });
+                            break;
+                        }
+                        try {
+                            const localHash = syncState.getLocalHash(safePath);
+                            if (localHash !== parentHash) {
+                                throw new Error(`Hash mismatch: local is ${localHash || "missing"}, patch requires ${parentHash}`);
+                            }
+                            if (!fileContentProvider || !fileWriter) {
+                                throw new Error("Missing providers or writers");
+                            }
+                            const fileData = await fileContentProvider(safePath);
+                            if (!fileData || fileData.isBinary) {
+                                throw new Error(`Cannot patch ${!fileData ? "missing" : "binary"} file`);
+                            }
+                            const { applyUnifiedPatch } = await import("./patch-apply.js");
+                            const reconstructed = applyUnifiedPatch(fileData.content, patch);
+                            const crypto = await import("crypto");
+                            const reconstructedHash = crypto.createHash("sha256").update(reconstructed).digest("hex").slice(0, 16);
+                            if (reconstructedHash !== targetHash) {
+                                throw new Error(`Patch verification failed: got ${reconstructedHash}, expected ${targetHash}`);
+                            }
+                            if (ignoreNextChangeFn) {
+                                ignoreNextChangeFn(safePath);
+                            }
+                            await fileWriter(safePath, reconstructed, false);
+                            syncState.recordRemoteChange(safePath, targetHash, from || peerName, false);
+                            logger.info(`Patch applied successfully to ${safePath} (${reconstructedHash})`);
+                            sendToPeer(peerName, {
+                                type: "file_applied",
+                                path: safePath,
+                                hash: targetHash,
+                                from: nodeName,
+                                appliedAt: Date.now(),
+                            });
+                            notify({
+                                type: "file_written",
+                                message: `Patch applied successfully to '${safePath}' from '${peerName}'.`,
+                                peerName,
+                                filePath: safePath,
+                                data: { file: safePath, isBinary: false, direction: "received", patched: true },
+                            });
+                        }
+                        catch (err) {
+                            logger.warn(`Patch verification failed for ${safePath}: ${err}`);
+                            syncStats.fallbackFullSyncs++;
+                            logger.info(`Fallback full sync requested for ${safePath} from ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+                            sendToPeer(peerName, {
+                                type: "file_content_request",
+                                path: safePath,
+                                from: nodeName,
+                            });
+                        }
                     }
                     break;
                 case "file_preview_request":
@@ -1077,7 +1176,7 @@ export function createTransport(config) {
         requestManifest(peerName) {
             sendToPeer(peerName, { type: "manifest_request", from: nodeName });
         },
-        sendFileContent(peerName, relativePath, content, isBinary) {
+        async sendFileContent(peerName, relativePath, content, isBinary) {
             const safeRelativePath = normalizeRelativePath(relativePath);
             if (!safeRelativePath) {
                 logger.warn(`Refusing to send unsafe file path to ${peerName}: ${relativePath}`);
@@ -1095,26 +1194,106 @@ export function createTransport(config) {
                 return;
             }
             const localHash = syncState.getLocalHash(safeRelativePath);
+            let patchSent = false;
+            if (!isBinary) {
+                try {
+                    const preview = await this.requestFilePreview(peerName, safeRelativePath, 5000);
+                    if (preview && preview.content && preview.hash && localHash) {
+                        const { createPatchPayload } = await import("./diff-engine.js");
+                        const patchPayload = createPatchPayload(safeRelativePath, preview.content, content, preview.hash, localHash);
+                        if (patchPayload && patchPayload.patch) {
+                            this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
+                            logger.info(`Generated patch for file ${safeRelativePath}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes`);
+                            patchSent = true;
+                        }
+                    }
+                }
+                catch (err) {
+                    logger.warn(`Failed to generate patch for ${safeRelativePath}: ${err}`);
+                }
+            }
+            if (patchSent) {
+                inFlightSends.set(`${peerName}:${safeRelativePath}`, {
+                    peerName,
+                    path: safeRelativePath,
+                    hash: localHash || undefined,
+                    sentAt: Date.now(),
+                });
+            }
+            else {
+                if (patchSent === false && !isBinary) {
+                    syncStats.fallbackFullSyncs++;
+                    logger.info(`Fallback to full sync for ${safeRelativePath}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+                }
+                sendToPeer(peerName, {
+                    type: "file_content",
+                    path: safeRelativePath,
+                    content,
+                    isBinary,
+                    hash: localHash,
+                    from: nodeName,
+                });
+                inFlightSends.set(`${peerName}:${safeRelativePath}`, {
+                    peerName,
+                    path: safeRelativePath,
+                    hash: localHash || undefined,
+                    sentAt: Date.now(),
+                });
+                notify({
+                    type: "file_sent",
+                    message: `Sent '${safeRelativePath}' to '${peerName}'.`,
+                    peerName,
+                    filePath: safeRelativePath,
+                    data: { file: safeRelativePath, isBinary, direction: "push" },
+                });
+            }
+        },
+        sendFilePatch(peerName, relativePath, patch, parentHash, targetHash) {
+            const safeRelativePath = normalizeRelativePath(relativePath);
+            if (!safeRelativePath) {
+                logger.warn(`Refusing to send patch for unsafe file path to ${peerName}: ${relativePath}`);
+                return;
+            }
+            let compressedPayload = null;
+            try {
+                const compressedBuffer = zlib.gzipSync(patch);
+                compressedPayload = compressedBuffer.toString("base64");
+            }
+            catch (err) {
+                logger.error(`Failed to compress patch for ${safeRelativePath}: ${err}`);
+                syncStats.fallbackFullSyncs++;
+                logger.info(`Fallback full sync requested for ${safeRelativePath} from ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+                sendToPeer(peerName, {
+                    type: "file_content_request",
+                    path: safeRelativePath,
+                    from: nodeName,
+                });
+                return;
+            }
+            const originalBytes = Buffer.byteLength(patch, "utf-8");
+            const compressedBytes = compressedPayload.length;
+            syncStats.patchSyncs++;
+            syncStats.patchBytesOriginal += originalBytes;
+            syncStats.patchBytesCompressed += compressedBytes;
+            const savedBytes = originalBytes - compressedBytes;
+            const savedPercent = originalBytes > 0 ? Math.round((savedBytes / originalBytes) * 100) : 0;
+            logger.info(`Patch compressed: ${originalBytes} -> ${compressedBytes} bytes. Saved ${savedPercent}% transfer size.`);
             sendToPeer(peerName, {
-                type: "file_content",
+                type: "file_patch",
                 path: safeRelativePath,
-                content,
-                isBinary,
-                hash: localHash,
+                patch: compressedPayload,
+                compressed: true,
+                parentHash,
+                targetHash,
                 from: nodeName,
             });
-            inFlightSends.set(`${peerName}:${safeRelativePath}`, {
-                peerName,
-                path: safeRelativePath,
-                hash: localHash || undefined,
-                sentAt: Date.now(),
-            });
+            logger.info(`Sent file patch for '${safeRelativePath}' to '${peerName}'`);
             notify({
-                type: "file_sent",
-                message: `Sent '${safeRelativePath}' to '${peerName}'.`,
+                type: "file_patch",
+                message: `Sent patch for '${safeRelativePath}' to '${peerName}'.`,
                 peerName,
                 filePath: safeRelativePath,
-                data: { file: safeRelativePath, isBinary, direction: "push" },
+                data: { file: safeRelativePath, parentHash, targetHash, direction: "push" },
             });
         },
         requestFileContent(peerName, relativePath) {
