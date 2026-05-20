@@ -15,7 +15,6 @@ const TEXT_EXTENSIONS = new Set([
 export function createFileWatcher(config) {
     const { workspaceDir, syncState, logger } = config;
     const watchedFiles = new Map();
-    const fileContents = new Map();
     const fileRealPaths = new Map();
     const ignoreChanges = new Map();
     let watcher = null;
@@ -135,7 +134,6 @@ export function createFileWatcher(config) {
                 const hash = computeHash(content);
                 const size = await getFileSize(filePath);
                 watchedFiles.set(relativePath, { relativePath, isBinary: binary, hash, size });
-                fileContents.set(relativePath, content);
                 fileRealPaths.set(relativePath, realPath);
                 syncState.recordSyncedHash(relativePath, hash);
                 logger.debug(`Updated cache for received file: ${relativePath}`);
@@ -162,7 +160,6 @@ export function createFileWatcher(config) {
             return;
         const tracked = { relativePath, isBinary: binary, hash, size };
         watchedFiles.set(relativePath, tracked);
-        fileContents.set(relativePath, content);
         fileRealPaths.set(relativePath, realPath);
         syncState.recordLocalChange(relativePath, hash, binary);
         logger.info(`File change detected: ${relativePath} (${content.length} chars, ${watchedFiles.size} files watched)`);
@@ -176,7 +173,6 @@ export function createFileWatcher(config) {
         const { relativePath } = resolved;
         if (watchedFiles.has(relativePath)) {
             watchedFiles.delete(relativePath);
-            fileContents.delete(relativePath);
             fileRealPaths.delete(relativePath);
             syncState.removeFile(relativePath);
             logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
@@ -261,10 +257,6 @@ export function createFileWatcher(config) {
             const tracked = watchedFiles.get(safeRelativePath);
             if (!tracked)
                 return null;
-            const cached = fileContents.get(safeRelativePath);
-            if (cached !== undefined) {
-                return { content: cached, isBinary: tracked.isBinary };
-            }
             const filePath = resolveInsideRoot(workspaceDir, safeRelativePath);
             if (!filePath)
                 return null;

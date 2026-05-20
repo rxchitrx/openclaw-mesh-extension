@@ -45,7 +45,6 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
   const { workspaceDir, syncState, logger } = config;
 
   const watchedFiles = new Map<string, TrackedFile>();
-  const fileContents = new Map<string, string>();
   const fileRealPaths = new Map<string, string>();
   const ignoreChanges = new Map<string, number>();
   let watcher: fs.FSWatcher | null = null;
@@ -167,7 +166,6 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
         const hash = computeHash(content);
         const size = await getFileSize(filePath);
         watchedFiles.set(relativePath, { relativePath, isBinary: binary, hash, size });
-        fileContents.set(relativePath, content);
         fileRealPaths.set(relativePath, realPath);
         syncState.recordSyncedHash(relativePath, hash);
         logger.debug(`Updated cache for received file: ${relativePath}`);
@@ -198,7 +196,6 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
     const tracked: TrackedFile = { relativePath, isBinary: binary, hash, size };
     watchedFiles.set(relativePath, tracked);
-    fileContents.set(relativePath, content);
     fileRealPaths.set(relativePath, realPath);
 
     syncState.recordLocalChange(relativePath, hash, binary);
@@ -213,7 +210,6 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
     const { relativePath } = resolved;
     if (watchedFiles.has(relativePath)) {
       watchedFiles.delete(relativePath);
-      fileContents.delete(relativePath);
       fileRealPaths.delete(relativePath);
       syncState.removeFile(relativePath);
       logger.info(`File deleted: ${relativePath} (${watchedFiles.size} files watched)`);
@@ -309,11 +305,6 @@ export function createFileWatcher(config: FileWatcherConfig): FileWatcherService
 
       const tracked = watchedFiles.get(safeRelativePath);
       if (!tracked) return null;
-
-      const cached = fileContents.get(safeRelativePath);
-      if (cached !== undefined) {
-        return { content: cached, isBinary: tracked.isBinary };
-      }
 
       const filePath = resolveInsideRoot(workspaceDir, safeRelativePath);
       if (!filePath) return null;
