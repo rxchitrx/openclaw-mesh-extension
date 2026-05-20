@@ -372,7 +372,7 @@ const meshPlugin = {
         });
         transport.setFileContentProvider(async (relativePath) => getFileContent(relativePath));
         transport.setManifestProvider(() => getLocalManifest());
-        transport.setFileWriter(async (relativePath, content, isBinary) => {
+        transport.setFileWriter(async (relativePath, contentOrTempPath, isBinary, isTempFile) => {
             if (!currentTrackDir) {
                 logger.warn(`Cannot write file ${relativePath}: no track directory set`);
                 throw new Error("no_track_directory");
@@ -384,11 +384,14 @@ const meshPlugin = {
             }
             const dir = path.dirname(filePath);
             await fs.promises.mkdir(dir, { recursive: true });
-            if (isBinary) {
-                await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+            if (isTempFile) {
+                await fs.promises.rename(contentOrTempPath, filePath);
+            }
+            else if (isBinary) {
+                await fs.promises.writeFile(filePath, Buffer.from(contentOrTempPath, "base64"));
             }
             else {
-                await fs.promises.writeFile(filePath, content, "utf-8");
+                await fs.promises.writeFile(filePath, contentOrTempPath, "utf-8");
             }
             logger.info(`Wrote received file to disk: ${filePath}`);
         });

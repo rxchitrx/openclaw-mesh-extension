@@ -71,7 +71,7 @@ export type PendingExecution = {
     expiresAt: number;
 };
 export type TransportNotification = {
-    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview" | "file_patch" | "capability_execute_requested" | "capability_execute_completed";
+    type: "peer_pending" | "peer_approved" | "peer_denied" | "peer_connected" | "peer_disconnected" | "file_deleted" | "file_conflict" | "conflict" | "manifest_received" | "node_info_received" | "sync_requested" | "sync_applied" | "sync_failed" | "file_sent" | "file_received" | "file_written" | "file_rejected" | "file_preview" | "file_patch" | "file_chunk" | "capability_execute_requested" | "capability_execute_completed";
     message: string;
     peerName?: string;
     filePath?: string;
@@ -113,7 +113,7 @@ export type TransportService = {
         isBinary: boolean;
     } | null>) => void;
     setManifestProvider: (provider: () => TrackedFile[]) => void;
-    setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
+    setFileWriter: (writer: (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) => void;
     setIgnoreNextChange: (fn: (relativePath: string) => void) => void;
 };
 export declare function createTransport(config: TransportConfig): TransportService;

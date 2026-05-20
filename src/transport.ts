@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import type { SyncStateService } from "./sync-state.js";
 import { isLocalIPv4Address, normalizePeerHost, type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
@@ -133,6 +136,7 @@ export type TransportNotification = {
     | "file_rejected"
     | "file_preview"
     | "file_patch"
+    | "file_chunk"
     | "capability_execute_requested"
     | "capability_execute_completed";
   message: string;
@@ -174,7 +178,7 @@ export type TransportService = {
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
   setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
   setManifestProvider: (provider: () => TrackedFile[]) => void;
-  setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
+  setFileWriter: (writer: (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) => void;
   setIgnoreNextChange: (fn: (relativePath: string) => void) => void;
 };
 
@@ -201,9 +205,12 @@ export function createTransport(config: TransportConfig): TransportService {
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
-  let fileWriter: ((relativePath: string, content: string, isBinary: boolean) => Promise<void>) | null = null;
+  let fileWriter: ((relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) | null = null;
   let ignoreNextChangeFn: ((relativePath: string) => void) | null = null;
   let server: any = null;
+  
+  const tmpDir = path.join(os.tmpdir(), "openclaw-mesh", nodeName);
+  fs.mkdirSync(tmpDir, { recursive: true });
   let notificationHandler: ((notification: TransportNotification) => void) | null = null;
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   const PING_INTERVAL_MS = 30000;
@@ -635,6 +642,70 @@ export function createTransport(config: TransportConfig): TransportService {
                 from: nodeName,
               });
               logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+            }
+          }
+          break;
+
+        case "file_chunk":
+          if (!approved) return;
+          {
+            const { path: filePath, chunkIndex, totalChunks, chunk, isBinary, hash: remoteHash } = message;
+            if (typeof filePath !== "string" || typeof chunkIndex !== "number" || typeof totalChunks !== "number" || typeof chunk !== "string") {
+              rejectValidation(peerName, { ok: false, error: "invalid_chunk_message" }, filePath || "unknown");
+              break;
+            }
+            
+            const tmpFilePath = path.join(tmpDir, `${peerName}-${Buffer.from(filePath).toString('hex')}.tmp`);
+            
+            try {
+              if (chunkIndex === 0) {
+                await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
+              }
+              
+              if (isBinary) {
+                await fs.promises.appendFile(tmpFilePath, Buffer.from(chunk, "base64"));
+              } else {
+                await fs.promises.appendFile(tmpFilePath, chunk, "utf-8");
+              }
+              
+              if (chunkIndex === totalChunks - 1) {
+                if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
+                  logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+                  sendFileRejected(peerName, filePath, "conflict", remoteHash);
+                  notify({
+                    type: "file_conflict",
+                    message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
+                    peerName,
+                    filePath,
+                    data: { file: filePath, remotePeer: peerName },
+                  });
+                  break;
+                }
+                
+                if (fileWriter) {
+                  if (ignoreNextChangeFn) ignoreNextChangeFn(filePath);
+                  await fileWriter(filePath, tmpFilePath, isBinary, true);
+                  syncState.recordRemoteChange(filePath, remoteHash || "", peerName, isBinary);
+                  logger.info(`Wrote received chunked file to disk: ${filePath} from ${peerName}`);
+                  sendToPeer(peerName, {
+                    type: "file_applied",
+                    path: filePath,
+                    hash: remoteHash,
+                    from: nodeName,
+                    appliedAt: Date.now(),
+                  });
+                  notify({
+                    type: "file_received",
+                    message: `Received '${filePath}' from '${peerName}'.`,
+                    peerName,
+                    filePath,
+                    data: { file: filePath, isBinary, direction: "pull" },
+                  });
+                }
+              }
+            } catch (err) {
+              logger.error(`Failed to assemble file chunk for ${filePath}: ${err}`);
+              sendFileRejected(peerName, filePath, "chunk_assembly_failed", remoteHash);
             }
           }
           break;
@@ -1484,14 +1555,25 @@ export function createTransport(config: TransportConfig): TransportService {
           syncStats.fallbackFullSyncs++;
           logger.info(`Fallback to full sync for ${safeRelativePath}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
         }
-        sendToPeer(peerName, {
-          type: "file_content",
-          path: safeRelativePath,
-          content,
-          isBinary,
-          hash: localHash,
-          from: nodeName,
-        });
+        const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+        const totalChunks = Math.ceil(content.length / CHUNK_SIZE) || 1;
+
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+          sendToPeer(peerName, {
+            type: "file_chunk",
+            path: safeRelativePath,
+            chunkIndex: i,
+            totalChunks,
+            chunk,
+            isBinary,
+            hash: localHash,
+            from: nodeName,
+          });
+          // Yield to event loop to prevent freezing on huge files
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
         inFlightSends.set(`${peerName}:${safeRelativePath}`, {
           peerName,
           path: safeRelativePath,
@@ -1749,7 +1831,7 @@ export function createTransport(config: TransportConfig): TransportService {
       manifestProvider = provider;
     },
 
-    setFileWriter(writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) {
+    setFileWriter(writer: (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) {
       fileWriter = writer;
     },
 

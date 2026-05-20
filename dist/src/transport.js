@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { isLocalIPv4Address, normalizePeerHost } from "./discovery.js";
 import { normalizeRelativePath } from "./path-safety.js";
 import { MAX_FILE_CONTENT_BYTES, MAX_MANIFEST_FILES, isRawMessageTooLarge, parseMeshMessage, validateApprovalResponse, validateCapabilityExecute, validateCapabilityExecuteResult, validateFileApplied, validateFileContent, validateFilePathMessage, validateFilePreviewRequest, validateFilePreviewResponse, validateFileRejected, validateManifest, validateNodeInfo, } from "./protocol-validation.js";
@@ -25,6 +28,8 @@ export function createTransport(config) {
     let fileWriter = null;
     let ignoreNextChangeFn = null;
     let server = null;
+    const tmpDir = path.join(os.tmpdir(), "openclaw-mesh", nodeName);
+    fs.mkdirSync(tmpDir, { recursive: true });
     let notificationHandler = null;
     let keepaliveTimer = null;
     const PING_INTERVAL_MS = 30000;
@@ -428,6 +433,68 @@ export function createTransport(config) {
                                 from: nodeName,
                             });
                             logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
+                        }
+                    }
+                    break;
+                case "file_chunk":
+                    if (!approved)
+                        return;
+                    {
+                        const { path: filePath, chunkIndex, totalChunks, chunk, isBinary, hash: remoteHash } = message;
+                        if (typeof filePath !== "string" || typeof chunkIndex !== "number" || typeof totalChunks !== "number" || typeof chunk !== "string") {
+                            rejectValidation(peerName, { ok: false, error: "invalid_chunk_message" }, filePath || "unknown");
+                            break;
+                        }
+                        const tmpFilePath = path.join(tmpDir, `${peerName}-${Buffer.from(filePath).toString('hex')}.tmp`);
+                        try {
+                            if (chunkIndex === 0) {
+                                await fs.promises.rm(tmpFilePath, { force: true }).catch(() => { });
+                            }
+                            if (isBinary) {
+                                await fs.promises.appendFile(tmpFilePath, Buffer.from(chunk, "base64"));
+                            }
+                            else {
+                                await fs.promises.appendFile(tmpFilePath, chunk, "utf-8");
+                            }
+                            if (chunkIndex === totalChunks - 1) {
+                                if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
+                                    logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+                                    sendFileRejected(peerName, filePath, "conflict", remoteHash);
+                                    notify({
+                                        type: "file_conflict",
+                                        message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
+                                        peerName,
+                                        filePath,
+                                        data: { file: filePath, remotePeer: peerName },
+                                    });
+                                    break;
+                                }
+                                if (fileWriter) {
+                                    if (ignoreNextChangeFn)
+                                        ignoreNextChangeFn(filePath);
+                                    await fileWriter(filePath, tmpFilePath, isBinary, true);
+                                    syncState.recordRemoteChange(filePath, remoteHash || "", peerName, isBinary);
+                                    logger.info(`Wrote received chunked file to disk: ${filePath} from ${peerName}`);
+                                    sendToPeer(peerName, {
+                                        type: "file_applied",
+                                        path: filePath,
+                                        hash: remoteHash,
+                                        from: nodeName,
+                                        appliedAt: Date.now(),
+                                    });
+                                    notify({
+                                        type: "file_received",
+                                        message: `Received '${filePath}' from '${peerName}'.`,
+                                        peerName,
+                                        filePath,
+                                        data: { file: filePath, isBinary, direction: "pull" },
+                                    });
+                                }
+                            }
+                        }
+                        catch (err) {
+                            logger.error(`Failed to assemble file chunk for ${filePath}: ${err}`);
+                            sendFileRejected(peerName, filePath, "chunk_assembly_failed", remoteHash);
                         }
                     }
                     break;
@@ -1225,14 +1292,23 @@ export function createTransport(config) {
                     syncStats.fallbackFullSyncs++;
                     logger.info(`Fallback to full sync for ${safeRelativePath}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
                 }
-                sendToPeer(peerName, {
-                    type: "file_content",
-                    path: safeRelativePath,
-                    content,
-                    isBinary,
-                    hash: localHash,
-                    from: nodeName,
-                });
+                const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+                const totalChunks = Math.ceil(content.length / CHUNK_SIZE) || 1;
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunk = content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                    sendToPeer(peerName, {
+                        type: "file_chunk",
+                        path: safeRelativePath,
+                        chunkIndex: i,
+                        totalChunks,
+                        chunk,
+                        isBinary,
+                        hash: localHash,
+                        from: nodeName,
+                    });
+                    // Yield to event loop to prevent freezing on huge files
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
                 inFlightSends.set(`${peerName}:${safeRelativePath}`, {
                     peerName,
                     path: safeRelativePath,
