@@ -5,6 +5,7 @@ import type { SyncStateService } from "./sync-state.js";
 import { isLocalIPv4Address, normalizePeerHost, type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 import { normalizeRelativePath } from "./path-safety.js";
+import { createShadowStore } from "./shadow-store.js";
 import {
   MAX_FILE_CONTENT_BYTES,
   MAX_MANIFEST_FILES,
@@ -36,6 +37,10 @@ import {
   type MeshIdentity,
 } from "./peer-identity.js";
 import * as zlib from "zlib";
+
+// Shadow store: persists last-sent file content to disk (keyed by hash) so we
+// can generate patches locally without asking the peer for their copy.
+const shadowStore = createShadowStore();
 
 export type TransportConfig = {
   nodeName: string;
@@ -1525,25 +1530,41 @@ export function createTransport(config: TransportConfig): TransportService {
       const localHash = syncState.getLocalHash(safeRelativePath);
 
       let patchSent = false;
-      if (!isBinary) {
+      if (!isBinary && localHash) {
         try {
-          const preview = await this.requestFilePreview(peerName, safeRelativePath, 5000);
-          if (preview && preview.content && preview.hash && localHash) {
-            const { createPatchPayload } = await import("./diff-engine.js");
-            const patchPayload = createPatchPayload(safeRelativePath, preview.content, content, preview.hash, localHash);
+          // Look up what hash we last sent to this peer for this file.
+          // If we find it, read the shadow content from disk and diff locally —
+          // no network round-trip to the peer needed.
+          const lastSentHash = syncState.getLastSentHashToPeer(peerName, safeRelativePath);
+          const oldContent = lastSentHash ? shadowStore.read(lastSentHash) : null;
 
+          if (oldContent !== null) {
+            if (lastSentHash === localHash) {
+              // Content hasn't changed since last send — nothing to do.
+              logger.info(`Skipping send of ${safeRelativePath} to ${peerName}: content unchanged since last send`);
+              return;
+            }
+            const { createPatchPayload } = await import("./diff-engine.js");
+            const patchPayload = createPatchPayload(safeRelativePath, oldContent, content, lastSentHash, localHash);
             if (patchPayload && patchPayload.patch) {
               this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
-              logger.info(`Generated patch for file ${safeRelativePath}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes`);
+              logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
               patchSent = true;
             }
+          } else {
+            logger.info(`No shadow found for ${safeRelativePath} → ${peerName}; will send full file and cache shadow for future diffs`);
           }
         } catch (err) {
-          logger.warn(`Failed to generate patch for ${safeRelativePath}: ${err}`);
+          logger.warn(`Failed to generate shadow-based patch for ${safeRelativePath}: ${err}`);
         }
       }
 
       if (patchSent) {
+        // Save the new content as a shadow for future diffs to this peer.
+        if (localHash) {
+          shadowStore.write(localHash, content);
+          syncState.recordSentToPeer(peerName, safeRelativePath, localHash);
+        }
         inFlightSends.set(`${peerName}:${safeRelativePath}`, {
           peerName,
           path: safeRelativePath,
@@ -1551,9 +1572,9 @@ export function createTransport(config: TransportConfig): TransportService {
           sentAt: Date.now(),
         });
       } else {
-        if (patchSent === false && !isBinary) {
+        if (!isBinary) {
           syncStats.fallbackFullSyncs++;
-          logger.info(`Fallback to full sync for ${safeRelativePath}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+          logger.info(`Fallback to full sync for ${safeRelativePath} → ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
         }
         const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
         const totalChunks = Math.ceil(content.length / CHUNK_SIZE) || 1;
@@ -1572,6 +1593,13 @@ export function createTransport(config: TransportConfig): TransportService {
           });
           // Yield to event loop to prevent freezing on huge files
           await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        // After the first full send, save a shadow so the NEXT change to this
+        // file can be sent as a patch instead of another full file.
+        if (localHash && !isBinary) {
+          shadowStore.write(localHash, content);
+          syncState.recordSentToPeer(peerName, safeRelativePath, localHash);
         }
 
         inFlightSends.set(`${peerName}:${safeRelativePath}`, {
