@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
 import type { SyncStateService } from "./sync-state.js";
@@ -7,7 +8,6 @@ import type { TrackedFile } from "./file-watcher.js";
 import { normalizeRelativePath } from "./path-safety.js";
 import { createShadowStore } from "./shadow-store.js";
 import {
-  MAX_FILE_CONTENT_BYTES,
   MAX_MANIFEST_FILES,
   isRawMessageTooLarge,
   parseMeshMessage,
@@ -15,6 +15,7 @@ import {
   validateCapabilityExecute,
   validateCapabilityExecuteResult,
   validateFileApplied,
+  validateFileChunk,
   validateFileContent,
   validateFilePathMessage,
   validateFilePreviewRequest,
@@ -200,6 +201,7 @@ export function createTransport(config: TransportConfig): TransportService {
   const remoteAppliedFiles = new Map<string, RemoteApplyRecord[]>();
   const remoteRejectedFiles = new Map<string, RemoteRejectRecord[]>();
   const inFlightSends = new Map<string, InFlightSendRecord>();
+  const chunkAssemblyQueues = new Map<string, Promise<void>>();
   const peerTrustWarnings = new Map<string, string>();
   const challengeNonces = new Map<string, string>();
   const previewRequests = new Map<string, {
@@ -234,6 +236,11 @@ export function createTransport(config: TransportConfig): TransportService {
   };
 
   const invalidPathLabel = (value: unknown): string => typeof value === "string" ? value : "<invalid>";
+
+  const computeMeshContentHash = (content: string | Buffer, isBinary: boolean): string => {
+    const hashInput = Buffer.isBuffer(content) && isBinary ? content.toString("base64") : content;
+    return crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 16);
+  };
 
   const notifyInvalidMessage = (peerName: string, reason: string, filePath?: string) => {
     notify({
@@ -654,15 +661,17 @@ export function createTransport(config: TransportConfig): TransportService {
         case "file_chunk":
           if (!approved) return;
           {
-            const { path: filePath, chunkIndex, totalChunks, chunk, isBinary, hash: remoteHash } = message;
-            if (typeof filePath !== "string" || typeof chunkIndex !== "number" || typeof totalChunks !== "number" || typeof chunk !== "string") {
-              rejectValidation(peerName, { ok: false, error: "invalid_chunk_message" }, filePath || "unknown");
+            const validation = validateFileChunk(message);
+            if (!validation.ok) {
+              rejectValidation(peerName, validation, message.path, typeof message.hash === "string" ? message.hash : undefined);
               break;
             }
+            const { path: filePath, chunkIndex, totalChunks, chunk, isBinary, hash: remoteHash } = validation.value;
+            const tmpFilePath = path.join(tmpDir, `${Buffer.from(`${peerName}:${filePath}`).toString("hex")}.tmp`);
+            const chunkAssemblyKey = `${peerName}:${filePath}`;
             
-            const tmpFilePath = path.join(tmpDir, `${peerName}-${Buffer.from(filePath).toString('hex')}.tmp`);
-            
-            try {
+            const previousAssembly = chunkAssemblyQueues.get(chunkAssemblyKey) ?? Promise.resolve();
+            const currentAssembly = previousAssembly.catch(() => {}).then(async () => {
               if (chunkIndex === 0) {
                 await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
               }
@@ -674,6 +683,24 @@ export function createTransport(config: TransportConfig): TransportService {
               }
               
               if (chunkIndex === totalChunks - 1) {
+                if (remoteHash) {
+                  const assembled = await fs.promises.readFile(tmpFilePath);
+                  const assembledHash = computeMeshContentHash(assembled, isBinary);
+                  if (assembledHash !== remoteHash) {
+                    logger.warn(`Rejected assembled chunked file ${filePath} from ${peerName}: hash mismatch ${assembledHash} != ${remoteHash}`);
+                    await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
+                    sendFileRejected(peerName, filePath, "hash_mismatch", remoteHash);
+                    notify({
+                      type: "sync_failed",
+                      message: `Rejected '${filePath}' from '${peerName}' because the assembled file hash did not match.`,
+                      peerName,
+                      filePath,
+                      data: { file: filePath, reason: "hash_mismatch", expectedHash: remoteHash, actualHash: assembledHash },
+                    });
+                    return;
+                  }
+                }
+
                 if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
                   logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
                   sendFileRejected(peerName, filePath, "conflict", remoteHash);
@@ -684,7 +711,7 @@ export function createTransport(config: TransportConfig): TransportService {
                     filePath,
                     data: { file: filePath, remotePeer: peerName },
                   });
-                  break;
+                  return;
                 }
                 
                 if (fileWriter) {
@@ -707,10 +734,22 @@ export function createTransport(config: TransportConfig): TransportService {
                     data: { file: filePath, isBinary, direction: "pull" },
                   });
                 }
+                await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
               }
+            });
+            chunkAssemblyQueues.set(chunkAssemblyKey, currentAssembly);
+            void currentAssembly.finally(() => {
+              if (chunkAssemblyQueues.get(chunkAssemblyKey) === currentAssembly) {
+                chunkAssemblyQueues.delete(chunkAssemblyKey);
+              }
+            }).catch(() => {});
+
+            try {
+              await currentAssembly;
             } catch (err) {
               logger.error(`Failed to assemble file chunk for ${filePath}: ${err}`);
               sendFileRejected(peerName, filePath, "chunk_assembly_failed", remoteHash);
+              await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
             }
           }
           break;
@@ -1516,17 +1555,6 @@ export function createTransport(config: TransportConfig): TransportService {
         logger.warn(`Refusing to send unsafe file path to ${peerName}: ${relativePath}`);
         return;
       }
-      if (Buffer.byteLength(content, "utf-8") > MAX_FILE_CONTENT_BYTES) {
-        logger.warn(`Refusing to send oversized file to ${peerName}: ${safeRelativePath}`);
-        notify({
-          type: "sync_failed",
-          message: `Refused to send '${safeRelativePath}' to '${peerName}' because it exceeds the 10 MB mesh payload limit.`,
-          peerName,
-          filePath: safeRelativePath,
-          data: { file: safeRelativePath, reason: "payload_too_large" },
-        });
-        return;
-      }
       const localHash = syncState.getLocalHash(safeRelativePath);
 
       let patchSent = false;
@@ -1576,7 +1604,9 @@ export function createTransport(config: TransportConfig): TransportService {
           syncStats.fallbackFullSyncs++;
           logger.info(`Fallback to full sync for ${safeRelativePath} → ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
         }
-        const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+        // 1 MiB keeps each WebSocket JSON payload below the raw-message cap.
+        // It is also divisible by 4, so base64 binary chunks remain decodable.
+        const CHUNK_SIZE = 1024 * 1024;
         const totalChunks = Math.ceil(content.length / CHUNK_SIZE) || 1;
 
         for (let i = 0; i < totalChunks; i++) {
