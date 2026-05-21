@@ -34,6 +34,15 @@ export type FileContentMessage = BaseMeshMessage & {
     isBinary: boolean;
     hash?: string;
 };
+export type FileChunkMessage = BaseMeshMessage & {
+    type: "file_chunk";
+    path: string;
+    chunkIndex: number;
+    totalChunks: number;
+    chunk: string;
+    isBinary: boolean;
+    hash?: string;
+};
 export type FilePathMessage = BaseMeshMessage & {
     path: string;
 };
@@ -82,6 +91,7 @@ export declare function validateApprovalResponse(message: Record<string, unknown
 export declare function validateNodeInfo(message: Record<string, unknown>): ValidationResult<NodeInfoMessage>;
 export declare function validateManifest(message: Record<string, unknown>): ValidationResult<ManifestMessage>;
 export declare function validateFileContent(message: Record<string, unknown>): ValidationResult<FileContentMessage>;
+export declare function validateFileChunk(message: Record<string, unknown>): ValidationResult<FileChunkMessage>;
 export declare function validateFilePathMessage<T extends string>(message: Record<string, unknown>, type: T): ValidationResult<FilePathMessage & {
     type: T;
 }>;

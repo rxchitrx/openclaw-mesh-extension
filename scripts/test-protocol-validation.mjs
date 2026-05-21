@@ -10,6 +10,7 @@ import {
   parseMeshMessage,
   validateNodeInfo,
   validateFileApplied,
+  validateFileChunk,
   validateFileContent,
   validateFilePathMessage,
   validateFilePreviewResponse,
@@ -38,6 +39,42 @@ const validContent = validateFileContent({
 });
 assert.equal(validContent.ok, true);
 assert.equal(validContent.value.path, "src/index.ts");
+
+const validChunkParse = parseMeshMessage(JSON.stringify({
+  type: "file_chunk",
+  path: "nested/../large.txt",
+  chunkIndex: 0,
+  totalChunks: 2,
+  chunk: "hello",
+  isBinary: false,
+  hash: "abc123",
+}));
+assert.equal(validChunkParse.ok, true);
+
+const validChunk = validateFileChunk({
+  type: "file_chunk",
+  path: "nested/../large.txt",
+  chunkIndex: 0,
+  totalChunks: 2,
+  chunk: "hello",
+  isBinary: false,
+  hash: "abc123",
+});
+assert.equal(validChunk.ok, true);
+assert.equal(validChunk.value.path, "large.txt");
+
+for (const invalidChunk of [
+  { type: "file_chunk", path: "../large.txt", chunkIndex: 0, totalChunks: 1, chunk: "x", isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 0.5, totalChunks: 1, chunk: "x", isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 0, totalChunks: 0, chunk: "x", isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: -1, totalChunks: 1, chunk: "x", isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 1, totalChunks: 1, chunk: "x", isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 0, totalChunks: 1, chunk: 123, isBinary: false },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 0, totalChunks: 1, chunk: "x", isBinary: "false" },
+  { type: "file_chunk", path: "large.txt", chunkIndex: 0, totalChunks: 1, chunk: "x", isBinary: false, hash: "h".repeat(129) },
+]) {
+  assert.equal(validateFileChunk(invalidChunk).ok, false);
+}
 
 const validPreview = validateFilePreviewResponse({
   type: "file_preview_response",

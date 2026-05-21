@@ -18,6 +18,7 @@
     "test:capability-execution": "node scripts/test-capability-execution.mjs",
     "test:identity": "node scripts/test-peer-identity.mjs",
     "test:approval": "node scripts/test-approval-flow.mjs",
+    "test:chunked-transfer": "node scripts/test-chunked-transfer.mjs",
     "test:notifications": "node scripts/test-urgent-notifications.mjs",
     "test:symlink-safety": "node scripts/test-symlink-safety.mjs",
     "test:ignore-patterns": "node scripts/test-ignore-patterns.mjs",
