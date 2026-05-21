@@ -3,11 +3,12 @@ export type PeerInfo = {
     host: string;
     port: number;
     lastSeen: number;
-    source: "mdns" | "transport" | "subnet-scan" | "ping";
+    source: "mdns" | "transport" | "subnet-scan" | "ping" | "signaling";
     lastTransportSeen?: number;
     lastMdnsSeen?: number;
     lastScanSeen?: number;
     lastPingSeen?: number;
+    lastSignalingSeen?: number;
 };
 export type DiscoveryConfig = {
     nodeName: string;
@@ -18,6 +19,8 @@ export type DiscoveryService = {
     start: () => Promise<void>;
     stop: () => Promise<void>;
     scan: () => Promise<void>;
+    connectSignaling: (serverUrl: string) => Promise<void>;
+    initiateWebRTCTest: (targetPeerName: string) => Promise<void>;
     getPeers: () => PeerInfo[];
     getLocalNode: () => {
         name: string;
@@ -28,7 +31,7 @@ export type DiscoveryService = {
         name: string;
         host: string;
         port?: number;
-        source?: "mdns" | "transport" | "subnet-scan";
+        source?: "mdns" | "transport" | "subnet-scan" | "signaling";
     }) => void;
 };
 export declare function getLocalIPv4Addresses(): string[];

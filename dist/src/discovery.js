@@ -1,6 +1,8 @@
 import * as os from "os";
 import * as net from "net";
 import { execFile } from "child_process";
+import { SignalingClient } from "./signaling/signaling-client.js";
+import { WebRTCTransport } from "./transport/webrtc-transport.js";
 const MESH_SERVICE_TYPE = "oc-mesh";
 const SCAN_PORT = 18790;
 const SCAN_TIMEOUT_MS = 400;
@@ -140,6 +142,8 @@ export function createDiscovery(config) {
     let ciaoService = null;
     let bonjour = null;
     let browser = null;
+    let signalingClient = null;
+    const testWebRTCTransports = new Map();
     return {
         async start() {
             try {
@@ -188,6 +192,9 @@ export function createDiscovery(config) {
             logger.info(`Mesh discovery started: ${nodeName} at ${getLocalIP()}:${port}`);
         },
         async stop() {
+            if (signalingClient) {
+                signalingClient.disconnect();
+            }
             if (browser) {
                 try {
                     browser.stop();
@@ -207,6 +214,84 @@ export function createDiscovery(config) {
                 catch { }
             }
             logger.info("Mesh discovery stopped");
+        },
+        async connectSignaling(serverUrl) {
+            if (!signalingClient) {
+                signalingClient = new SignalingClient(nodeName, logger);
+                signalingClient.onPeerJoin = (peerName) => {
+                    this.notePeer({
+                        name: peerName,
+                        host: "remote", // Host is unknown until WebRTC negotiation, but we track the peer's existence
+                        source: "signaling"
+                    });
+                };
+                signalingClient.onPeerLeave = (peerName) => {
+                    if (peers.has(peerName)) {
+                        peers.delete(peerName);
+                        logger.info(`[SIGNAL] Peer disappeared (signaling): ${peerName}`);
+                    }
+                };
+                signalingClient.onSignalMessage = async (msg) => {
+                    if (msg.type === "signal_offer") {
+                        logger.info(`[SIGNAL] Received offer from ${msg.from}, creating responder transport...`);
+                        const transport = new WebRTCTransport(nodeName, msg.from, signalingClient, false, logger);
+                        testWebRTCTransports.set(msg.from, transport);
+                        transport.onMessage((raw) => {
+                            try {
+                                const data = JSON.parse(raw);
+                                if (data.type === "webrtc_ping") {
+                                    logger.info(`[WEBRTC] Received ping from ${msg.from}, sending pong...`);
+                                    transport.send(JSON.stringify({ type: "webrtc_pong", timestamp: data.timestamp }));
+                                }
+                                else if (data.type === "webrtc_pong") {
+                                    const latency = Date.now() - data.timestamp;
+                                    logger.info(`[WEBRTC] Connectivity test SUCCESS! Roundtrip latency to ${msg.from}: ${latency}ms`);
+                                }
+                            }
+                            catch (e) { }
+                        });
+                        await transport.handleOffer(msg.payload);
+                    }
+                    else if (msg.type === "signal_answer") {
+                        const transport = testWebRTCTransports.get(msg.from);
+                        if (transport)
+                            await transport.handleAnswer(msg.payload);
+                    }
+                    else if (msg.type === "ice_candidate") {
+                        const transport = testWebRTCTransports.get(msg.from);
+                        if (transport)
+                            await transport.handleIceCandidate(msg.payload);
+                    }
+                };
+                try {
+                    await signalingClient.connect(serverUrl);
+                }
+                catch (err) {
+                    logger.error(`[SIGNAL] Failed to connect to signaling server: ${err}`);
+                }
+            }
+        },
+        async initiateWebRTCTest(targetPeerName) {
+            if (!signalingClient)
+                throw new Error("Signaling not connected");
+            logger.info(`[WEBRTC] Initiating test connection to ${targetPeerName}...`);
+            const transport = new WebRTCTransport(nodeName, targetPeerName, signalingClient, true, logger);
+            testWebRTCTransports.set(targetPeerName, transport);
+            transport.onMessage((raw) => {
+                try {
+                    const data = JSON.parse(raw);
+                    if (data.type === "webrtc_ping") {
+                        logger.info(`[WEBRTC] Received ping from ${targetPeerName}, sending pong...`);
+                        transport.send(JSON.stringify({ type: "webrtc_pong", timestamp: data.timestamp }));
+                    }
+                    else if (data.type === "webrtc_pong") {
+                        const latency = Date.now() - data.timestamp;
+                        logger.info(`[WEBRTC] Connectivity test SUCCESS! Roundtrip latency to ${targetPeerName}: ${latency}ms`);
+                    }
+                }
+                catch (e) { }
+            });
+            await transport.initiate();
         },
         async scan() {
             if (browser) {
@@ -293,6 +378,8 @@ export function createDiscovery(config) {
                     existing.lastMdnsSeen = now;
                 if (source === "subnet-scan")
                     existing.lastScanSeen = now;
+                if (source === "signaling")
+                    existing.lastSignalingSeen = now;
                 return;
             }
             peers.set(peer.name, {
@@ -304,8 +391,9 @@ export function createDiscovery(config) {
                 lastTransportSeen: source === "transport" ? now : undefined,
                 lastMdnsSeen: source === "mdns" ? now : undefined,
                 lastScanSeen: source === "subnet-scan" ? now : undefined,
+                lastSignalingSeen: source === "signaling" ? now : undefined,
             });
-            logger.info(`Peer noted from transport activity: ${peer.name} at ${peer.host}:${peerPort}`);
+            logger.info(`Peer noted from ${source} activity: ${peer.name} at ${peer.host}:${peerPort}`);
         },
     };
 }
