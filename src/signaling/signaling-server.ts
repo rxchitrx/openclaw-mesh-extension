@@ -8,7 +8,7 @@ export class SignalingServer {
 
   constructor(port: number, logger: any) {
     this.logger = logger;
-    this.wss = new WebSocketServer({ port, maxPayload: 65536 });
+    this.wss = new WebSocketServer({ port, host: "::", maxPayload: 65536 });
 
     this.wss.on("connection", (ws: WebSocket) => {
       let registeredPeerName: string | null = null;

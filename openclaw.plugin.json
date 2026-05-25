@@ -58,6 +58,16 @@
         },
         "default": [],
         "description": "Flat capability tags advertised to mesh peers, such as has:xcode or can:ios-build"
+      },
+      "signalUrl": {
+        "type": "string",
+        "description": "URL of the WebRTC signaling server for cross-network connectivity"
+      },
+      "urgentNotifyCooldownMs": {
+        "type": "number"
+      },
+      "notificationSessionTtlMs": {
+        "type": "number"
       }
     }
   }
