@@ -49,7 +49,7 @@ export class SignalingClient {
         
         if (this.pingInterval) clearInterval(this.pingInterval);
         this.pingInterval = setInterval(() => {
-          if (this.ws && this.ws.readyState === this.ws.OPEN) {
+          if (this.ws && this.ws.readyState === 1) {
             this.ws.ping();
           }
         }, 15000);

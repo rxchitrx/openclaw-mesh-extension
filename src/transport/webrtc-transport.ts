@@ -67,7 +67,7 @@ export class WebRTCTransport implements PeerTransport {
       if (this.messageHandler) {
         this.messageHandler(raw);
       } else {
-        this.logger.info(`[WEBRTC] Early message buffered from ${this.remotePeerName} (${raw.substring(0, 80)}...)`);
+        this.logger.info(`[WEBRTC] Early message buffered from ${this.remotePeerName} (${String(raw).substring(0, 80)}...)`);
         this.earlyMessages.push(raw);
       }
     });
