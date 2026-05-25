@@ -63,12 +63,27 @@ export class WebRTCTransport implements PeerTransport {
 
   private setupDataChannel(channel: any) {
     channel.message.subscribe((data: any) => {
-      const raw = Buffer.isBuffer(data) ? data.toString("utf-8") : data;
-      if (this.messageHandler) {
-        this.messageHandler(raw);
-      } else {
-        this.logger.info(`[WEBRTC] Early message buffered from ${this.remotePeerName} (${String(raw).substring(0, 80)}...)`);
-        this.earlyMessages.push(raw);
+      try {
+        let raw: string;
+        if (typeof data === "string") {
+          raw = data;
+        } else if (Buffer.isBuffer(data)) {
+          raw = data.toString("utf-8");
+        } else if (data instanceof ArrayBuffer) {
+          raw = Buffer.from(data).toString("utf-8");
+        } else if (data instanceof Uint8Array) {
+          raw = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf-8");
+        } else {
+          raw = String(data);
+        }
+        if (this.messageHandler) {
+          this.messageHandler(raw);
+        } else {
+          this.logger.info(`[WEBRTC] Early message buffered from ${this.remotePeerName} (${String(raw).substring(0, 80)}...)`);
+          this.earlyMessages.push(raw);
+        }
+      } catch (err) {
+        this.logger.error(`[WEBRTC] Error in message handler for ${this.remotePeerName}: ${err}`);
       }
     });
 
@@ -167,7 +182,13 @@ export class WebRTCTransport implements PeerTransport {
     }
     while (this.earlyMessages.length > 0) {
       const raw = this.earlyMessages.shift();
-      if (raw) handler(raw);
+      if (raw) {
+        try {
+          handler(raw);
+        } catch (err) {
+          this.logger.error(`[WEBRTC] Error handling early message for ${this.remotePeerName}: ${err}`);
+        }
+      }
     }
   }
 
