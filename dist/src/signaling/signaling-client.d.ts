@@ -7,6 +7,8 @@ export declare class SignalingClient {
     private isIntentionalDisconnect;
     private reconnectAttempts;
     private reconnectTimer;
+    private maxRetries;
+    private pingInterval?;
     onPeerJoin?: (peerName: string) => void;
     onPeerLeave?: (peerName: string) => void;
     onSignalMessage?: (msg: SignalMessage) => void;

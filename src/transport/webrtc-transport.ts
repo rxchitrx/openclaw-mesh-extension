@@ -67,6 +67,7 @@ export class WebRTCTransport implements PeerTransport {
       if (this.messageHandler) {
         this.messageHandler(raw);
       } else {
+        this.logger.info(`[WEBRTC] Early message buffered from ${this.remotePeerName} (${raw.substring(0, 80)}...)`);
         this.earlyMessages.push(raw);
       }
     });
@@ -161,6 +162,9 @@ export class WebRTCTransport implements PeerTransport {
 
   onMessage(handler: (data: string) => void): void {
     this.messageHandler = handler;
+    if (this.earlyMessages.length > 0) {
+      this.logger.info(`[WEBRTC] Flushing ${this.earlyMessages.length} early message(s) for ${this.remotePeerName}`);
+    }
     while (this.earlyMessages.length > 0) {
       const raw = this.earlyMessages.shift();
       if (raw) handler(raw);

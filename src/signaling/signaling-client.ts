@@ -8,6 +8,8 @@ export class SignalingClient {
   private isIntentionalDisconnect = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxRetries = 10;
+  private pingInterval?: NodeJS.Timeout;
 
   public onPeerJoin?: (peerName: string) => void;
   public onPeerLeave?: (peerName: string) => void;
@@ -44,6 +46,14 @@ export class SignalingClient {
         this.reconnectAttempts = 0;
         isResolved = true;
         this.send({ type: "register", from: this.localNodeName });
+        
+        if (this.pingInterval) clearInterval(this.pingInterval);
+        this.pingInterval = setInterval(() => {
+          if (this.ws && this.ws.readyState === this.ws.OPEN) {
+            this.ws.ping();
+          }
+        }, 15000);
+        
         resolve();
       });
 
@@ -80,6 +90,10 @@ export class SignalingClient {
 
       this.ws.on("close", () => {
         this.logger.info(`[SIGNAL] Disconnected from signaling server.`);
+        if (this.pingInterval) {
+          clearInterval(this.pingInterval);
+          this.pingInterval = undefined;
+        }
         this.ws = null;
         if (!isResolved) {
           isResolved = true;

@@ -6,6 +6,8 @@ export class SignalingClient {
     isIntentionalDisconnect = false;
     reconnectAttempts = 0;
     reconnectTimer = null;
+    maxRetries = 10;
+    pingInterval;
     onPeerJoin;
     onPeerLeave;
     onSignalMessage;
@@ -36,6 +38,13 @@ export class SignalingClient {
                 this.reconnectAttempts = 0;
                 isResolved = true;
                 this.send({ type: "register", from: this.localNodeName });
+                if (this.pingInterval)
+                    clearInterval(this.pingInterval);
+                this.pingInterval = setInterval(() => {
+                    if (this.ws && this.ws.readyState === this.ws.OPEN) {
+                        this.ws.ping();
+                    }
+                }, 15000);
                 resolve();
             });
             this.ws.on("message", (data) => {
@@ -72,6 +81,10 @@ export class SignalingClient {
             });
             this.ws.on("close", () => {
                 this.logger.info(`[SIGNAL] Disconnected from signaling server.`);
+                if (this.pingInterval) {
+                    clearInterval(this.pingInterval);
+                    this.pingInterval = undefined;
+                }
                 this.ws = null;
                 if (!isResolved) {
                     isResolved = true;

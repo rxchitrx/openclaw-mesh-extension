@@ -383,7 +383,9 @@ export function createTransport(config: TransportConfig): TransportService {
   const sendIdentityChallenge = (peerName: string, transport: PeerTransport) => {
     const nonce = createNonce();
     challengeNonces.set(peerName, nonce);
-    if (transport.isOpen()) {
+    const isOpen = transport.isOpen();
+    logger.info(`[IDENTITY] Sending identity_challenge to ${peerName} (transport.isOpen=${isOpen})`);
+    if (isOpen) {
       transport.send(JSON.stringify({
         type: "identity_challenge",
         nonce,
@@ -391,6 +393,9 @@ export function createTransport(config: TransportConfig): TransportService {
         fingerprint: identity.fingerprint,
         publicKey: encodePublicKeyForWire(identity.publicKey),
       }));
+      logger.info(`[IDENTITY] identity_challenge SENT to ${peerName}`);
+    } else {
+      logger.warn(`[IDENTITY] Transport NOT open for ${peerName}, cannot send identity_challenge`);
     }
   };
 
@@ -521,29 +526,35 @@ export function createTransport(config: TransportConfig): TransportService {
       switch (message.type) {
         case "identity_challenge":
           {
+            logger.info(`[IDENTITY] Received identity_challenge from ${peerName}`);
             if (typeof message.nonce !== "string" || message.nonce.length > 1024) {
               rejectValidation(peerName, { ok: false, reason: "invalid_message", detail: "invalid identity challenge nonce" });
               break;
             }
             sendIdentityProof(peerName, message.nonce);
+            logger.info(`[IDENTITY] Sent identity_proof back to ${peerName}`);
           }
           break;
 
         case "identity_proof":
           {
+            logger.info(`[IDENTITY] Received identity_proof from ${peerName}`);
             const nonce = challengeNonces.get(peerName);
             const fingerprint = typeof message.fingerprint === "string" ? message.fingerprint : "";
             const publicKey = decodePublicKeyFromWire(message.publicKey);
             const signature = typeof message.signature === "string" ? message.signature : "";
             const proofNode = typeof message.node === "string" ? message.node : peerName;
             if (!nonce || !fingerprint || !publicKey || !signature) {
+              logger.warn(`[IDENTITY] Invalid identity_proof from ${peerName}: nonce=${!!nonce} fingerprint=${!!fingerprint} publicKey=${!!publicKey} signature=${!!signature}`);
               rejectValidation(peerName, { ok: false, reason: "invalid_message", detail: "invalid identity proof" });
               break;
             }
             if (!verifyIdentityProof(publicKey, nonce, proofNode, fingerprint, signature)) {
+              logger.warn(`[IDENTITY] identity_proof VERIFICATION FAILED from ${peerName}`);
               rejectValidation(peerName, { ok: false, reason: "invalid_message", detail: "identity proof verification failed" });
               break;
             }
+            logger.info(`[IDENTITY] identity_proof VERIFIED for ${peerName} (fingerprint=${fingerprint})`);
             challengeNonces.delete(peerName);
             handleVerifiedIdentity(peerName, fingerprint, publicKey);
           }
