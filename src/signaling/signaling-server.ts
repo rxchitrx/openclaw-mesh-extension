@@ -56,14 +56,16 @@ export class SignalingServer {
 
       ws.on("close", () => {
         if (registeredPeerName) {
-          this.peers.delete(registeredPeerName);
-          this.logger.info(`[SIGNAL] Peer disconnected: ${registeredPeerName}`);
-          
-          // Broadcast leave to all other peers
-          this.broadcast({
-            type: "peer_leave",
-            from: registeredPeerName
-          });
+          if (this.peers.get(registeredPeerName) === ws) {
+            this.peers.delete(registeredPeerName);
+            this.logger.info(`[SIGNAL] Peer disconnected: ${registeredPeerName}`);
+            
+            // Broadcast leave to all other peers
+            this.broadcast({
+              type: "peer_leave",
+              from: registeredPeerName
+            });
+          }
         }
       });
     });
