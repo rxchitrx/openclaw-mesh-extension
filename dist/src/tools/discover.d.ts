@@ -29,9 +29,47 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             ok: boolean;
             error: string;
             action?: undefined;
+            peerName?: undefined;
             host?: undefined;
             port?: undefined;
-            peerName?: undefined;
+            direction?: undefined;
+            localNode?: undefined;
+            peers?: undefined;
+            connections?: undefined;
+            pending?: undefined;
+            timestamp?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            action: string;
+            peerName: string;
+            error?: undefined;
+            host?: undefined;
+            port?: undefined;
+            direction?: undefined;
+            localNode?: undefined;
+            peers?: undefined;
+            connections?: undefined;
+            pending?: undefined;
+            timestamp?: undefined;
+        };
+    } | {
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            error: string;
+            peerName: string;
+            action?: undefined;
+            host?: undefined;
+            port?: undefined;
             direction?: undefined;
             localNode?: undefined;
             peers?: undefined;
@@ -114,9 +152,9 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
             timestamp: string;
             error?: undefined;
             action?: undefined;
+            peerName?: undefined;
             host?: undefined;
             port?: undefined;
-            peerName?: undefined;
             direction?: undefined;
         };
     }>;

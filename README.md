@@ -16,6 +16,7 @@ Video walkthrough: [assets/timeline-demo.mov](./assets/timeline-demo.mov)
 - Transport-first peer presence tracking when a peer connects inbound
 - Peer approval flow (no one joins without your say-so)
 - WebSocket P2P connections with session-based notifications
+- Optional internet relay mode for peers that are not on the same LAN
 - Hash-based version tracking with conflict detection
 - All file types supported (text + binary: images, PDFs, videos, etc.)
 - GitHub-style unified text diffs with binary summaries
@@ -24,7 +25,7 @@ Video walkthrough: [assets/timeline-demo.mov](./assets/timeline-demo.mov)
 - File-applied confirmations so the sender knows the receiver wrote a file to disk
 - File-rejected notifications so failed/conflicted pushes do not look synced
 - File deletion detection with peer notification
-- Works completely offline on LAN
+- Works completely offline on LAN, or over the internet through a relay
 
 ## Prerequisites
 
@@ -110,8 +111,8 @@ You: "Pull all from friend-laptop"
 ```text
 OpenClaw Gateway
   Mesh Extension
-    Discovery: subnet scan + mDNS advertise/browse
-    Transport: WebSocket approval, manifest exchange, push/pull
+    Discovery: subnet scan + mDNS advertise/browse + optional relay presence
+    Transport: WebSocket/relay approval, manifest exchange, push/pull
     Sync State: hash/version tracking, pending changes, conflict detection
     Event Store: queued notifications, delivery, acknowledgement
     File Watcher: all files, deletions, binary support, feedback-loop suppression
@@ -121,6 +122,48 @@ OpenClaw Gateway
 ### Peer Discovery
 
 On startup, the extension scans the local subnet for other mesh nodes listening on port `18790`. It also uses mDNS as a secondary discovery method. Discovered peers are auto-connected.
+
+### Internet Relay Mode
+
+LAN discovery does not work across NATs and firewalls. For internet use, run a small relay and configure both nodes to join the same relay room. Each node makes one outbound WebSocket connection to the relay, so laptops do not need open inbound ports.
+
+The relay only forwards live messages between online peers in the same room. It does not persist manifests or file contents. Peer approval, signed identity verification, trusted fingerprints, conflict detection, diffs, and push/pull all stay in the mesh extension.
+
+Start a relay:
+
+```bash
+npm run build
+OPENCLAW_MESH_RELAY_TOKEN='shared-secret' npm run relay -- 18791
+```
+
+For production, put the relay behind TLS and use a `wss://` URL. For local testing, `ws://127.0.0.1:18791` is fine.
+
+Configure each node:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "mesh": {
+        "enabled": true,
+        "config": {
+          "nodeName": "my-laptop",
+          "port": 18790,
+          "trackDir": "~/projects/my-app",
+          "internetMode": "hybrid",
+          "relayUrl": "wss://relay.example.com",
+          "relayRoom": "team-project",
+          "relayToken": "shared-secret"
+        }
+      }
+    }
+  }
+}
+```
+
+Use `internetMode: "relay"` to rely on the relay, or `"hybrid"` to keep LAN discovery and relay presence together. Relay peers appear in `mesh_discover`, and you can manually connect with `relay:<peerName>`.
+
+Security note: v1 relay mode relies on TLS, relay room tokens, and the existing signed fingerprint approval flow. The relay can see forwarded mesh payloads while relaying them; do not treat it as a zero-knowledge service yet.
 
 ### Peer Connection Flow
 
@@ -208,6 +251,10 @@ Add to your `~/.openclaw/openclaw.json`:
 | `nodeName` | string | `node-<pid>` | Unique name for this node |
 | `port` | number | `18790` | Port for P2P WebSocket connections |
 | `trackDir` | string | none | Directory to auto-track on startup; can also be set at runtime with `mesh_track` |
+| `internetMode` | string | `off` | `off`, `relay`, or `hybrid` |
+| `relayUrl` | string | none | WebSocket URL for the relay (`wss://...` in production) |
+| `relayRoom` | string | none | Shared room name for peers that should see each other |
+| `relayToken` | string | none | Optional shared token required by the relay |
 
 ## Protocol Messages
 

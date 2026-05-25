@@ -58,6 +58,24 @@
         },
         "default": [],
         "description": "Flat capability tags advertised to mesh peers, such as has:xcode or can:ios-build"
+      },
+      "internetMode": {
+        "type": "string",
+        "enum": ["off", "relay", "hybrid"],
+        "default": "off",
+        "description": "Enable internet connectivity through a relay. Use hybrid to keep LAN discovery and relay together."
+      },
+      "relayUrl": {
+        "type": "string",
+        "description": "WebSocket URL for the mesh relay, such as wss://relay.example.com"
+      },
+      "relayRoom": {
+        "type": "string",
+        "description": "Shared relay room name for peers that should see each other"
+      },
+      "relayToken": {
+        "type": "string",
+        "description": "Optional shared token required by the relay server"
       }
     }
   }

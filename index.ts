@@ -61,6 +61,10 @@ export type MeshConfig = {
   trackDir?: string;
   ignorePatterns?: string[];
   capabilities?: string[];
+  internetMode?: "off" | "relay" | "hybrid";
+  relayUrl?: string;
+  relayRoom?: string;
+  relayToken?: string;
   urgentNotifyCooldownMs?: number;
   notificationSessionTtlMs?: number;
 };
@@ -138,6 +142,14 @@ const meshPlugin = {
         items: { type: "string" },
         default: [],
       },
+      internetMode: {
+        type: "string",
+        enum: ["off", "relay", "hybrid"],
+        default: "off",
+      },
+      relayUrl: { type: "string" },
+      relayRoom: { type: "string" },
+      relayToken: { type: "string" },
       urgentNotifyCooldownMs: { type: "number", default: DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS },
       notificationSessionTtlMs: { type: "number", default: DEFAULT_NOTIFICATION_SESSION_TTL_MS },
     },
@@ -162,7 +174,26 @@ const meshPlugin = {
     const discovery = createDiscovery({ nodeName, port, logger });
     const syncState = createSyncState({ nodeName, logger });
     const capabilityRegistry = createCapabilityRegistry(config.capabilities ?? []);
-    const transport = createTransport({ nodeName, port, syncState, logger });
+    const relayEnabled = config.internetMode === "relay" || config.internetMode === "hybrid";
+    const relayConfig = relayEnabled && config.relayUrl && config.relayRoom
+      ? {
+          url: config.relayUrl,
+          room: config.relayRoom,
+          token: config.relayToken,
+          onPeer(peer: { name: string }) {
+            discovery.notePeer({
+              name: peer.name,
+              host: "relay",
+              port: 0,
+              source: "relay",
+            });
+          },
+        }
+      : undefined;
+    if (relayEnabled && !relayConfig) {
+      logger.warn("Mesh internet mode is enabled but relayUrl or relayRoom is missing; relay transport will not start.");
+    }
+    const transport = createTransport({ nodeName, port, syncState, logger, relay: relayConfig });
     const eventStore = createMeshEventStore();
     const sessionTargets = createMeshSessionTargetStore({
       ttlMs: config.notificationSessionTtlMs ?? DEFAULT_NOTIFICATION_SESSION_TTL_MS,

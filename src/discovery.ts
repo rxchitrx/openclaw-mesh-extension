@@ -7,11 +7,12 @@ export type PeerInfo = {
   host: string;
   port: number;
   lastSeen: number;
-  source: "mdns" | "transport" | "subnet-scan" | "ping";
+  source: "mdns" | "transport" | "subnet-scan" | "ping" | "relay";
   lastTransportSeen?: number;
   lastMdnsSeen?: number;
   lastScanSeen?: number;
   lastPingSeen?: number;
+  lastRelaySeen?: number;
 };
 
 export type DiscoveryConfig = {
@@ -26,7 +27,7 @@ export type DiscoveryService = {
   scan: () => Promise<void>;
   getPeers: () => PeerInfo[];
   getLocalNode: () => { name: string; host: string; port: number };
-  notePeer: (peer: { name: string; host: string; port?: number; source?: "mdns" | "transport" | "subnet-scan" }) => void;
+  notePeer: (peer: { name: string; host: string; port?: number; source?: "mdns" | "transport" | "subnet-scan" | "relay" }) => void;
 };
 
 const MESH_SERVICE_TYPE = "oc-mesh";
@@ -292,11 +293,12 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
 
     notePeer(peer) {
       const normalizedHost = normalizePeerHost(peer.host || "");
-      if (!peer.name || peer.name === nodeName || !normalizedHost || isLocalIPv4Address(normalizedHost)) return;
+      const source = peer.source || "transport";
+      if (!peer.name || peer.name === nodeName || !normalizedHost) return;
+      if (source !== "relay" && isLocalIPv4Address(normalizedHost)) return;
       const existing = peers.get(peer.name);
       const peerPort = peer.port || port;
       const now = Date.now();
-      const source = peer.source || "transport";
       if (existing) {
         existing.host = normalizedHost;
         existing.port = peerPort;
@@ -305,6 +307,7 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         if (source === "transport") existing.lastTransportSeen = now;
         if (source === "mdns") existing.lastMdnsSeen = now;
         if (source === "subnet-scan") existing.lastScanSeen = now;
+        if (source === "relay") existing.lastRelaySeen = now;
         return;
       }
       peers.set(peer.name, {
@@ -316,6 +319,7 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
         lastTransportSeen: source === "transport" ? now : undefined,
         lastMdnsSeen: source === "mdns" ? now : undefined,
         lastScanSeen: source === "subnet-scan" ? now : undefined,
+        lastRelaySeen: source === "relay" ? now : undefined,
       });
       logger.info(`Peer noted from transport activity: ${peer.name} at ${peer.host}:${peerPort}`);
     },

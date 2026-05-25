@@ -2,11 +2,13 @@ import * as fs from "fs";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as path from "path";
+import { EventEmitter } from "events";
 import type { SyncStateService } from "./sync-state.js";
 import { isLocalIPv4Address, normalizePeerHost, type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 import { normalizeRelativePath } from "./path-safety.js";
 import { createShadowStore } from "./shadow-store.js";
+import { RelayClient, type RelayPeer } from "./relay-client.js";
 import {
   MAX_MANIFEST_FILES,
   isRawMessageTooLarge,
@@ -49,6 +51,12 @@ export type TransportConfig = {
   syncState: SyncStateService;
   logger: any;
   executionTimeoutMs?: number;
+  relay?: {
+    url: string;
+    room: string;
+    token?: string;
+    onPeer?: (peer: RelayPeer) => void;
+  };
 };
 
 export type Connection = {
@@ -56,6 +64,7 @@ export type Connection = {
   socket: any;
   isAlive: boolean;
   approved: boolean;
+  transport: "direct" | "relay";
   fingerprint?: string;
   publicKey?: string;
   identityVerified?: boolean;
@@ -67,6 +76,7 @@ export type PendingConnection = {
   host: string;
   connectedAt: number;
   direction: "incoming" | "outgoing";
+  transport: "direct" | "relay";
   fingerprint?: string;
   publicKey?: string;
   identityVerified?: boolean;
@@ -188,10 +198,57 @@ export type TransportService = {
   setIgnoreNextChange: (fn: (relativePath: string) => void) => void;
 };
 
+class RelayVirtualSocket extends EventEmitter {
+  readyState = 1;
+
+  constructor(
+    private readonly peerName: string,
+    private readonly relay: RelayClient,
+    private readonly logger: any,
+  ) {
+    super();
+  }
+
+  send(data: string | Buffer) {
+    if (this.readyState !== 1) return;
+    const payload = Buffer.isBuffer(data) ? data.toString("utf-8") : data;
+    const ok = this.relay.send(this.peerName, payload);
+    if (!ok) {
+      this.logger.warn?.(`Relay send to '${this.peerName}' failed; peer may be offline or relay disconnected.`);
+    }
+  }
+
+  deliver(payload: string) {
+    if (this.readyState === 1) {
+      this.emit("message", Buffer.from(payload, "utf-8"));
+    }
+  }
+
+  close() {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.emit("close");
+  }
+
+  terminate() {
+    this.close();
+  }
+}
+
 export function createTransport(config: TransportConfig): TransportService {
   const { nodeName, port, syncState, logger } = config;
   const executionTimeoutMs = config.executionTimeoutMs ?? 60000;
   const identity: MeshIdentity = loadOrCreateIdentity();
+  const relayClient = config.relay
+    ? new RelayClient({
+        url: config.relay.url,
+        room: config.relay.room,
+        token: config.relay.token,
+        nodeName,
+        identity,
+        logger,
+      })
+    : null;
 
   const connections = new Map<string, Connection>();
   const pendingConnections = new Map<string, PendingConnection>();
@@ -435,6 +492,7 @@ export function createTransport(config: TransportConfig): TransportService {
       socket: pending.socket,
       isAlive: true,
       approved,
+      transport: pending.transport,
       fingerprint: pending.fingerprint,
       publicKey: pending.publicKey,
       identityVerified: pending.identityVerified,
@@ -1300,6 +1358,72 @@ export function createTransport(config: TransportConfig): TransportService {
     });
   };
 
+  const ensureRelaySocket = (peerName: string, direction: "incoming" | "outgoing"): RelayVirtualSocket | null => {
+    if (!relayClient) return null;
+    const existingConnection = connections.get(peerName);
+    if (existingConnection?.transport === "relay") return existingConnection.socket as RelayVirtualSocket;
+    const existingPending = pendingConnections.get(peerName);
+    if (existingPending?.transport === "relay") return existingPending.socket as RelayVirtualSocket;
+
+    const socket = new RelayVirtualSocket(peerName, relayClient, logger);
+    const pending: PendingConnection = {
+      peerName,
+      socket,
+      host: "relay",
+      connectedAt: Date.now(),
+      direction,
+      transport: "relay",
+      identityVerified: false,
+    };
+    pendingConnections.set(peerName, pending);
+    setupSocket(socket, peerName, direction === "incoming");
+    if (direction === "incoming") {
+      sendIdentityChallenge(peerName, socket);
+    }
+    return socket;
+  };
+
+  const handleRelayMessage = (peerName: string, payload: string) => {
+    const socket = ensureRelaySocket(peerName, "incoming");
+    if (!socket) {
+      logger.warn(`Ignoring relay message from '${peerName}' because relay transport is not configured.`);
+      return;
+    }
+    socket.deliver(payload);
+  };
+
+  if (relayClient) {
+    relayClient.on("peer", (peer) => {
+      config.relay?.onPeer?.(peer);
+      notify({
+        type: "peer_connected",
+        message: `Relay peer '${peer.name}' is online.`,
+        peerName: peer.name,
+        data: { source: "relay", fingerprint: peer.fingerprint },
+      });
+    });
+    relayClient.on("peerGone", (peerName) => {
+      const pending = pendingConnections.get(peerName);
+      if (pending?.transport === "relay") {
+        pending.socket.close();
+      }
+      const conn = connections.get(peerName);
+      if (conn?.transport === "relay") {
+        conn.socket.close();
+      }
+    });
+    relayClient.on("message", ({ from, payload }) => handleRelayMessage(from, payload));
+    relayClient.on("status", (status, detail) => {
+      if (status === "connected") {
+        logger.info(`Connected to mesh relay ${config.relay?.url}`);
+      } else if (status === "disconnected") {
+        logger.warn(`Disconnected from mesh relay ${config.relay?.url}`);
+      } else {
+        logger.warn(`Mesh relay status error${detail ? `: ${detail}` : ""}`);
+      }
+    });
+  }
+
   return {
     async start() {
       try {
@@ -1333,6 +1457,7 @@ export function createTransport(config: TransportConfig): TransportService {
             host,
             connectedAt: Date.now(),
             direction: "incoming",
+            transport: "direct",
             fingerprint: typeof req.headers["x-mesh-fingerprint"] === "string" ? req.headers["x-mesh-fingerprint"] : undefined,
             publicKey: decodePublicKeyFromWire(req.headers["x-mesh-public-key"]) || undefined,
             identityVerified: false,
@@ -1343,6 +1468,11 @@ export function createTransport(config: TransportConfig): TransportService {
         });
 
         logger.info(`Mesh transport server started on port ${port}`);
+
+        if (relayClient) {
+          await relayClient.start();
+          logger.info(`Mesh relay client started for room '${config.relay?.room}' at ${config.relay?.url}`);
+        }
 
         keepaliveTimer = setInterval(() => {
           for (const [name, conn] of connections) {
@@ -1395,6 +1525,10 @@ export function createTransport(config: TransportConfig): TransportService {
       }
       pendingConnections.clear();
 
+      if (relayClient) {
+        await relayClient.stop();
+      }
+
       if (server) {
         await new Promise<void>((resolve) => {
           server.close(() => {
@@ -1407,6 +1541,27 @@ export function createTransport(config: TransportConfig): TransportService {
 
     async connectToPeer(peer: PeerInfo) {
       const normalizedHost = normalizePeerHost(peer.host);
+      if (peer.source === "relay" || normalizedHost === "relay") {
+        if (!relayClient) {
+          logger.warn(`Cannot connect to relay peer '${peer.name}': relay is not configured.`);
+          return false;
+        }
+        if (!relayClient.isConnected()) {
+          logger.warn(`Cannot connect to relay peer '${peer.name}': relay is not connected yet.`);
+          return false;
+        }
+        if (peer.name === nodeName) {
+          logger.warn(`Refusing to connect mesh node to itself over relay: ${peer.name}`);
+          return false;
+        }
+        if (connections.has(peer.name)) return true;
+        if (pendingConnections.has(peer.name)) return true;
+        const socket = ensureRelaySocket(peer.name, "outgoing");
+        if (!socket) return false;
+        sendIdentityChallenge(peer.name, socket);
+        logger.info(`Connected to relay peer (awaiting identity proof): ${peer.name}`);
+        return true;
+      }
       if (peer.name === nodeName || (isLocalIPv4Address(normalizedHost) && peer.port === port)) {
         logger.warn(`Refusing to connect mesh node to itself: ${peer.name} at ${peer.host}:${peer.port}`);
         return false;
@@ -1432,6 +1587,7 @@ export function createTransport(config: TransportConfig): TransportService {
               host: normalizedHost,
               connectedAt: Date.now(),
               direction: "outgoing",
+              transport: "direct",
               identityVerified: false,
             };
             pendingConnections.set(peer.name, pending);

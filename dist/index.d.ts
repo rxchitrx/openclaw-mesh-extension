@@ -5,6 +5,10 @@ export type MeshConfig = {
     trackDir?: string;
     ignorePatterns?: string[];
     capabilities?: string[];
+    internetMode?: "off" | "relay" | "hybrid";
+    relayUrl?: string;
+    relayRoom?: string;
+    relayToken?: string;
     urgentNotifyCooldownMs?: number;
     notificationSessionTtlMs?: number;
 };
@@ -43,6 +47,20 @@ declare const meshPlugin: {
                     type: string;
                 };
                 default: any[];
+            };
+            internetMode: {
+                type: string;
+                enum: string[];
+                default: string;
+            };
+            relayUrl: {
+                type: string;
+            };
+            relayRoom: {
+                type: string;
+            };
+            relayToken: {
+                type: string;
             };
             urgentNotifyCooldownMs: {
                 type: string;

@@ -276,12 +276,14 @@ export function createDiscovery(config) {
         },
         notePeer(peer) {
             const normalizedHost = normalizePeerHost(peer.host || "");
-            if (!peer.name || peer.name === nodeName || !normalizedHost || isLocalIPv4Address(normalizedHost))
+            const source = peer.source || "transport";
+            if (!peer.name || peer.name === nodeName || !normalizedHost)
+                return;
+            if (source !== "relay" && isLocalIPv4Address(normalizedHost))
                 return;
             const existing = peers.get(peer.name);
             const peerPort = peer.port || port;
             const now = Date.now();
-            const source = peer.source || "transport";
             if (existing) {
                 existing.host = normalizedHost;
                 existing.port = peerPort;
@@ -293,6 +295,8 @@ export function createDiscovery(config) {
                     existing.lastMdnsSeen = now;
                 if (source === "subnet-scan")
                     existing.lastScanSeen = now;
+                if (source === "relay")
+                    existing.lastRelaySeen = now;
                 return;
             }
             peers.set(peer.name, {
@@ -304,6 +308,7 @@ export function createDiscovery(config) {
                 lastTransportSeen: source === "transport" ? now : undefined,
                 lastMdnsSeen: source === "mdns" ? now : undefined,
                 lastScanSeen: source === "subnet-scan" ? now : undefined,
+                lastRelaySeen: source === "relay" ? now : undefined,
             });
             logger.info(`Peer noted from transport activity: ${peer.name} at ${peer.host}:${peerPort}`);
         },

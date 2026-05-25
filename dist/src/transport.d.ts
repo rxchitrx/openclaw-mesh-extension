@@ -1,18 +1,26 @@
 import type { SyncStateService } from "./sync-state.js";
 import { type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
+import { type RelayPeer } from "./relay-client.js";
 export type TransportConfig = {
     nodeName: string;
     port: number;
     syncState: SyncStateService;
     logger: any;
     executionTimeoutMs?: number;
+    relay?: {
+        url: string;
+        room: string;
+        token?: string;
+        onPeer?: (peer: RelayPeer) => void;
+    };
 };
 export type Connection = {
     peerName: string;
     socket: any;
     isAlive: boolean;
     approved: boolean;
+    transport: "direct" | "relay";
     fingerprint?: string;
     publicKey?: string;
     identityVerified?: boolean;
@@ -23,6 +31,7 @@ export type PendingConnection = {
     host: string;
     connectedAt: number;
     direction: "incoming" | "outgoing";
+    transport: "direct" | "relay";
     fingerprint?: string;
     publicKey?: string;
     identityVerified?: boolean;

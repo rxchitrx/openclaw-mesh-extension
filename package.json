@@ -19,6 +19,8 @@
     "test:identity": "node scripts/test-peer-identity.mjs",
     "test:approval": "node scripts/test-approval-flow.mjs",
     "test:chunked-transfer": "node scripts/test-chunked-transfer.mjs",
+    "test:relay": "node scripts/test-relay-server.mjs && node scripts/test-relay-integration.mjs",
+    "relay": "node dist/relay-server.js",
     "test:notifications": "node scripts/test-urgent-notifications.mjs",
     "test:symlink-safety": "node scripts/test-symlink-safety.mjs",
     "test:ignore-patterns": "node scripts/test-ignore-patterns.mjs",
