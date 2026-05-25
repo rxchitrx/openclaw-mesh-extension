@@ -23,6 +23,8 @@ export type DiscoveryService = {
         name: string;
         host: string;
         port: number;
+        primaryAddress: string;
+        addresses: string[];
     };
     notePeer: (peer: {
         name: string;

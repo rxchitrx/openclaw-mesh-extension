@@ -2,6 +2,7 @@ import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { TrackedFile } from "../file-watcher.js";
 import { type DiffPreview } from "../diff-engine.js";
+import { type TrackStateReader } from "./tracking-guard.js";
 export type DiffServices = {
     transport: TransportService;
     syncState: SyncStateService;
@@ -10,6 +11,7 @@ export type DiffServices = {
         content: string;
         isBinary: boolean;
     } | null>;
+    getTrackState: TrackStateReader;
 };
 export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
     label: string;
@@ -48,6 +50,17 @@ export declare function createMeshDiffTool(services: DiffServices, _ctx: any): {
         contextLines?: number;
         maxBytes?: number;
     }, _signal: any, _onUpdate: any) => Promise<{
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            error: string;
+            clearedStalePendingChanges: number;
+            stalePendingFiles: string[];
+        };
+    } | {
         content: {
             type: "text";
             text: string;

@@ -1,7 +1,12 @@
+import * as fs from "fs";
+import * as crypto from "crypto";
+import * as os from "os";
+import * as path from "path";
 import type { SyncStateService } from "./sync-state.js";
 import { isLocalIPv4Address, normalizePeerHost, type PeerInfo } from "./discovery.js";
 import type { TrackedFile } from "./file-watcher.js";
 import { normalizeRelativePath } from "./path-safety.js";
+import { createShadowStore } from "./shadow-store.js";
 import {
   MAX_FILE_CONTENT_BYTES,
   MAX_MANIFEST_FILES,
@@ -11,6 +16,7 @@ import {
   validateCapabilityExecute,
   validateCapabilityExecuteResult,
   validateFileApplied,
+  validateFileChunk,
   validateFileContent,
   validateFilePathMessage,
   validateFilePreviewRequest,
@@ -33,6 +39,10 @@ import {
   type MeshIdentity,
 } from "./peer-identity.js";
 import * as zlib from "zlib";
+
+// Shadow store: persists last-sent file content to disk (keyed by hash) so we
+// can generate patches locally without asking the peer for their copy.
+const shadowStore = createShadowStore();
 
 export type TransportConfig = {
   nodeName: string;
@@ -92,6 +102,8 @@ export type InFlightSendRecord = {
   hash?: string;
   sentAt: number;
   peerName: string;
+  mode?: "direct" | "chunked" | "patch";
+  transferId?: string;
 };
 
 export type FilePreview = {
@@ -133,6 +145,7 @@ export type TransportNotification = {
     | "file_rejected"
     | "file_preview"
     | "file_patch"
+    | "file_chunk"
     | "capability_execute_requested"
     | "capability_execute_completed";
   message: string;
@@ -174,7 +187,7 @@ export type TransportService = {
   setNodeInfoProvider: (provider: () => NodeInfo) => void;
   setFileContentProvider: (provider: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) => void;
   setManifestProvider: (provider: () => TrackedFile[]) => void;
-  setFileWriter: (writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) => void;
+  setFileWriter: (writer: (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) => void;
   setIgnoreNextChange: (fn: (relativePath: string) => void) => void;
 };
 
@@ -191,6 +204,17 @@ export function createTransport(config: TransportConfig): TransportService {
   const remoteAppliedFiles = new Map<string, RemoteApplyRecord[]>();
   const remoteRejectedFiles = new Map<string, RemoteRejectRecord[]>();
   const inFlightSends = new Map<string, InFlightSendRecord>();
+  const chunkAssemblies = new Map<string, {
+    peerName: string;
+    path: string;
+    transferId: string;
+    totalChunks: number;
+    isBinary: boolean;
+    hash?: string;
+    chunks: Map<number, string>;
+    startedAt: number;
+  }>();
+  const autoRequestedCapabilities = new Set<string>();
   const peerTrustWarnings = new Map<string, string>();
   const challengeNonces = new Map<string, string>();
   const previewRequests = new Map<string, {
@@ -201,9 +225,12 @@ export function createTransport(config: TransportConfig): TransportService {
   let nodeInfoProvider: (() => NodeInfo) | null = null;
   let fileContentProvider: ((relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>) | null = null;
   let manifestProvider: (() => TrackedFile[]) | null = null;
-  let fileWriter: ((relativePath: string, content: string, isBinary: boolean) => Promise<void>) | null = null;
+  let fileWriter: ((relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) | null = null;
   let ignoreNextChangeFn: ((relativePath: string) => void) | null = null;
   let server: any = null;
+
+  const tmpDir = path.join(os.tmpdir(), "openclaw-mesh", nodeName);
+  fs.mkdirSync(tmpDir, { recursive: true });
   let notificationHandler: ((notification: TransportNotification) => void) | null = null;
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   const PING_INTERVAL_MS = 30000;
@@ -223,6 +250,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
   const invalidPathLabel = (value: unknown): string => typeof value === "string" ? value : "<invalid>";
 
+  const computeMeshContentHash = (content: string | Buffer, isBinary: boolean): string => {
+    const hashInput = Buffer.isBuffer(content) && isBinary ? content.toString("base64") : content;
+    return crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 16);
+  };
+
   const notifyInvalidMessage = (peerName: string, reason: string, filePath?: string) => {
     notify({
       type: "sync_failed",
@@ -235,6 +267,34 @@ export function createTransport(config: TransportConfig): TransportService {
 
   const createExecutionRequestId = (): string => {
     return `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+
+  const createTransferId = (): string => {
+    return `xfer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+
+  const chunkAssemblyKey = (peerName: string, filePath: string, transferId: string) => `${peerName}\0${filePath}\0${transferId}`;
+
+  const rejectChunkAssembly = (peerName: string, filePath: string, reason: string, hash?: string, details?: Record<string, unknown>) => {
+    sendFileRejected(peerName, filePath, reason, hash);
+    notify({
+      type: "sync_failed",
+      message: `Chunked transfer for '${filePath}' from '${peerName}' failed: ${reason}.`,
+      peerName,
+      filePath,
+      data: { file: filePath, reason, hash, ...details },
+    });
+  };
+
+  const clearPeerTransientState = (peerName: string) => {
+    remoteNodeInfo.delete(peerName);
+    remoteManifests.delete(peerName);
+    for (const key of [...autoRequestedCapabilities]) {
+      if (key.startsWith(`${peerName}\0`)) autoRequestedCapabilities.delete(key);
+    }
+    for (const [key, assembly] of chunkAssemblies) {
+      if (assembly.peerName === peerName) chunkAssemblies.delete(key);
+    }
   };
 
   const publicPendingExecution = (execution: PendingExecution): PendingExecution => ({
@@ -318,6 +378,31 @@ export function createTransport(config: TransportConfig): TransportService {
       },
     });
     return publicPendingExecution(execution);
+  };
+
+  const sendCapabilityExecuteToPeer = (peerName: string, capability: string, instruction: string, requestId?: string): string | null => {
+    const conn = connections.get(peerName);
+    if (!conn?.approved || conn.socket.readyState !== 1) {
+      logger.warn(`Cannot send capability execution to '${peerName}': peer is not connected and approved.`);
+      return null;
+    }
+    const executionRequestId = requestId || createExecutionRequestId();
+    storePendingExecution({
+      requestId: executionRequestId,
+      peerName,
+      direction: "outgoing",
+      capability,
+      instruction,
+      from: nodeName,
+    });
+    sendToPeer(peerName, {
+      type: "capability_execute",
+      requestId: executionRequestId,
+      capability,
+      instruction,
+      from: nodeName,
+    });
+    return executionRequestId;
   };
 
   const rejectValidation = <T>(peerName: string, validation: Extract<ValidationResult<T>, { ok: false }>, rawPath?: unknown, hash?: string | null) => {
@@ -594,7 +679,18 @@ export function createTransport(config: TransportConfig): TransportService {
               trackingFiles: validation.value.trackingFiles,
               capabilities: validation.value.capabilities,
             };
+            const previousCapabilities = new Set(remoteNodeInfo.get(peerName)?.capabilities ?? []);
             remoteNodeInfo.set(peerName, info);
+            for (const capability of info.capabilities) {
+              const requestKey = `${peerName}\0${capability}`;
+              if (!previousCapabilities.has(capability) && !autoRequestedCapabilities.has(requestKey)) {
+                const instruction = `Please handle capability '${capability}' for this mesh peer and report the result.`;
+                const requestId = sendCapabilityExecuteToPeer(peerName, capability, instruction);
+                if (requestId) {
+                  autoRequestedCapabilities.add(requestKey);
+                }
+              }
+            }
             const dirStr = info.trackingDir ? info.trackingDir : "none";
             const fileStr = info.trackingFileCount > 0 ? `${info.trackingFileCount} file(s)` : "no files";
             notify({
@@ -637,6 +733,133 @@ export function createTransport(config: TransportConfig): TransportService {
               });
               logger.info(`Sent manifest to ${peerName} (${localManifest.length} files)`);
             }
+          }
+          break;
+
+        case "file_chunk":
+          if (!approved) return;
+          {
+            const validation = validateFileChunk(message);
+            if (!validation.ok) {
+              rejectValidation(peerName, validation, message.path, typeof message.hash === "string" ? message.hash : undefined);
+              break;
+            }
+            const { path: filePath, transferId, chunkIndex, totalChunks, chunk, isBinary, hash: remoteHash } = validation.value;
+            const finalTransferId = transferId || `${remoteHash || "nohash"}:${totalChunks}`;
+            const key = chunkAssemblyKey(peerName, filePath, finalTransferId);
+            let assembly = chunkAssemblies.get(key);
+
+            if (!assembly) {
+              if (chunkIndex !== 0) {
+                rejectChunkAssembly(peerName, filePath, "missing_initial_chunk", remoteHash, { transferId: finalTransferId, chunkIndex, totalChunks });
+                break;
+              }
+              assembly = {
+                peerName,
+                path: filePath,
+                transferId: finalTransferId,
+                totalChunks,
+                isBinary,
+                hash: remoteHash,
+                chunks: new Map(),
+                startedAt: Date.now(),
+              };
+              chunkAssemblies.set(key, assembly);
+            }
+
+            if (assembly.totalChunks !== totalChunks || assembly.isBinary !== isBinary || assembly.hash !== remoteHash) {
+              chunkAssemblies.delete(key);
+              rejectChunkAssembly(peerName, filePath, "chunk_metadata_mismatch", remoteHash, { transferId: finalTransferId });
+              break;
+            }
+
+            if (assembly.chunks.has(chunkIndex)) {
+              chunkAssemblies.delete(key);
+              rejectChunkAssembly(peerName, filePath, "duplicate_chunk", remoteHash, { transferId: finalTransferId, chunkIndex });
+              break;
+            }
+
+            assembly.chunks.set(chunkIndex, chunk);
+            notify({
+              type: "file_chunk",
+              message: `Received chunk ${chunkIndex + 1}/${totalChunks} for '${filePath}' from '${peerName}'.`,
+              peerName,
+              filePath,
+              data: { file: filePath, transferId: finalTransferId, chunkIndex, totalChunks, hash: remoteHash },
+            });
+
+            if (assembly.chunks.size !== totalChunks) {
+              break;
+            }
+
+            const missing: number[] = [];
+            for (let i = 0; i < totalChunks; i++) {
+              if (!assembly.chunks.has(i)) missing.push(i);
+            }
+            if (missing.length > 0) {
+              chunkAssemblies.delete(key);
+              rejectChunkAssembly(peerName, filePath, "missing_chunk", remoteHash, { transferId: finalTransferId, missingChunks: missing });
+              break;
+            }
+
+            const ordered = Array.from({ length: totalChunks }, (_, index) => assembly!.chunks.get(index)!);
+            const assembled = isBinary
+              ? Buffer.concat(ordered.map((item) => Buffer.from(item, "base64")))
+              : ordered.join("");
+            const assembledHash = computeMeshContentHash(assembled, isBinary);
+            if (remoteHash && assembledHash !== remoteHash) {
+              chunkAssemblies.delete(key);
+              rejectChunkAssembly(peerName, filePath, "hash_mismatch", remoteHash, { transferId: finalTransferId, expectedHash: remoteHash, actualHash: assembledHash });
+              break;
+            }
+
+            if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
+              chunkAssemblies.delete(key);
+              logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
+              sendFileRejected(peerName, filePath, "conflict", remoteHash);
+              notify({
+                type: "file_conflict",
+                message: `Conflict on '${filePath}' from '${peerName}': both sides modified this file. Your local version was kept. Use 'pull ${filePath} from ${peerName}' to override.`,
+                peerName,
+                filePath,
+                data: { file: filePath, remotePeer: peerName },
+              });
+              break;
+            }
+
+            if (fileWriter) {
+              try {
+                if (ignoreNextChangeFn) ignoreNextChangeFn(filePath);
+                const tmpFilePath = path.join(tmpDir, `${Buffer.from(key).toString("hex")}.tmp`);
+                if (isBinary) {
+                  await fs.promises.writeFile(tmpFilePath, assembled as Buffer);
+                } else {
+                  await fs.promises.writeFile(tmpFilePath, assembled as string, "utf-8");
+                }
+                await fileWriter(filePath, tmpFilePath, isBinary, true);
+                await fs.promises.rm(tmpFilePath, { force: true }).catch(() => {});
+                syncState.recordRemoteChange(filePath, remoteHash || assembledHash, peerName, isBinary);
+                sendToPeer(peerName, {
+                  type: "file_applied",
+                  path: filePath,
+                  hash: remoteHash || assembledHash,
+                  from: nodeName,
+                  appliedAt: Date.now(),
+                });
+                notify({
+                  type: "file_received",
+                  message: `Received chunked '${filePath}' from '${peerName}'.`,
+                  peerName,
+                  filePath,
+                  data: { file: filePath, isBinary, direction: "pull", transferId: finalTransferId, hash: remoteHash || assembledHash, mode: "chunked" },
+                });
+              } catch (err) {
+                logger.error(`Failed to assemble/write chunked file ${filePath}: ${err}`);
+                const reason = err instanceof Error && err.message === "no_track_directory" ? "no_tracked_directory" : "chunk_assembly_failed";
+                rejectChunkAssembly(peerName, filePath, reason, remoteHash, { transferId: finalTransferId, error: String(err) });
+              }
+            }
+            chunkAssemblies.delete(key);
           }
           break;
 
@@ -687,14 +910,20 @@ export function createTransport(config: TransportConfig): TransportService {
                 });
               } catch (err) {
                 logger.error(`Failed to write received file ${filePath}: ${err}`);
-                const reason = err instanceof Error && err.message === "invalid_path" ? "invalid_path" : "write_failed";
+                const reason = err instanceof Error && err.message === "invalid_path"
+                  ? "invalid_path"
+                  : err instanceof Error && err.message === "no_track_directory"
+                    ? "no_tracked_directory"
+                    : "write_failed";
                 sendFileRejected(peerName, filePath, reason, remoteHash);
                 notify({
                   type: "sync_failed",
-                  message: `Failed to write '${filePath}' from '${peerName}' to disk.`,
+                  message: reason === "no_tracked_directory"
+                    ? `Cannot write '${filePath}' from '${peerName}' because no tracked directory is configured.`
+                    : `Failed to write '${filePath}' from '${peerName}' to disk.`,
                   peerName,
                   filePath,
-                  data: { file: filePath, isBinary, error: String(err) },
+                  data: { file: filePath, isBinary, reason, error: String(err) },
                 });
               }
             } else {
@@ -1170,6 +1399,7 @@ export function createTransport(config: TransportConfig): TransportService {
       pendingConnections.delete(peerName);
       if (connections.has(peerName)) {
         connections.delete(peerName);
+        clearPeerTransientState(peerName);
         notify({
           type: "peer_disconnected",
           message: `Peer '${peerName}' disconnected (${connections.size} remaining).`,
@@ -1183,6 +1413,7 @@ export function createTransport(config: TransportConfig): TransportService {
       logger.error(`Connection error with ${peerName}: ${err}`);
       pendingConnections.delete(peerName);
       connections.delete(peerName);
+      clearPeerTransientState(peerName);
     });
   };
 
@@ -1211,6 +1442,7 @@ export function createTransport(config: TransportConfig): TransportService {
             const old = connections.get(peerName)!;
             old.socket.close();
             connections.delete(peerName);
+            clearPeerTransientState(peerName);
           }
 
           const pending: PendingConnection = {
@@ -1236,6 +1468,7 @@ export function createTransport(config: TransportConfig): TransportService {
               logger.warn(`Peer ${name} missed ping, closing connection`);
               conn.socket.terminate();
               connections.delete(name);
+              clearPeerTransientState(name);
               notify({
                 type: "peer_disconnected",
                 message: `Peer '${name}' disconnected (missed ping, ${connections.size} remaining).`,
@@ -1441,70 +1674,127 @@ export function createTransport(config: TransportConfig): TransportService {
         logger.warn(`Refusing to send unsafe file path to ${peerName}: ${relativePath}`);
         return;
       }
-      if (Buffer.byteLength(content, "utf-8") > MAX_FILE_CONTENT_BYTES) {
-        logger.warn(`Refusing to send oversized file to ${peerName}: ${safeRelativePath}`);
-        notify({
-          type: "sync_failed",
-          message: `Refused to send '${safeRelativePath}' to '${peerName}' because it exceeds the 10 MB mesh payload limit.`,
-          peerName,
-          filePath: safeRelativePath,
-          data: { file: safeRelativePath, reason: "payload_too_large" },
-        });
-        return;
-      }
       const localHash = syncState.getLocalHash(safeRelativePath);
 
       let patchSent = false;
-      if (!isBinary) {
+      if (!isBinary && localHash) {
         try {
-          const preview = await this.requestFilePreview(peerName, safeRelativePath, 5000);
-          if (preview && preview.content && preview.hash && localHash) {
-            const { createPatchPayload } = await import("./diff-engine.js");
-            const patchPayload = createPatchPayload(safeRelativePath, preview.content, content, preview.hash, localHash);
+          // Look up what hash we last sent to this peer for this file.
+          // If we find it, read the shadow content from disk and diff locally —
+          // no network round-trip to the peer needed.
+          const lastSentHash = syncState.getLastSentHashToPeer(peerName, safeRelativePath);
+          const oldContent = lastSentHash ? shadowStore.read(lastSentHash) : null;
 
+          if (oldContent !== null) {
+            if (lastSentHash === localHash) {
+              // Content hasn't changed since last send — nothing to do.
+              logger.info(`Skipping send of ${safeRelativePath} to ${peerName}: content unchanged since last send`);
+              return;
+            }
+            const { createPatchPayload } = await import("./diff-engine.js");
+            const patchPayload = createPatchPayload(safeRelativePath, oldContent, content, lastSentHash, localHash);
             if (patchPayload && patchPayload.patch) {
               this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
-              logger.info(`Generated patch for file ${safeRelativePath}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes`);
+              logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
               patchSent = true;
             }
+          } else {
+            logger.info(`No shadow found for ${safeRelativePath} → ${peerName}; will send full file and cache shadow for future diffs`);
           }
         } catch (err) {
-          logger.warn(`Failed to generate patch for ${safeRelativePath}: ${err}`);
+          logger.warn(`Failed to generate shadow-based patch for ${safeRelativePath}: ${err}`);
         }
       }
 
       if (patchSent) {
+        // Save the new content as a shadow for future diffs to this peer.
+        if (localHash) {
+          shadowStore.write(localHash, content);
+          syncState.recordSentToPeer(peerName, safeRelativePath, localHash);
+        }
         inFlightSends.set(`${peerName}:${safeRelativePath}`, {
           peerName,
           path: safeRelativePath,
           hash: localHash || undefined,
           sentAt: Date.now(),
+          mode: "patch",
         });
       } else {
-        if (patchSent === false && !isBinary) {
+        if (!isBinary) {
           syncStats.fallbackFullSyncs++;
-          logger.info(`Fallback to full sync for ${safeRelativePath}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
+          logger.info(`Fallback to full sync for ${safeRelativePath} → ${peerName}. Fallback sync count: ${syncStats.fallbackFullSyncs}`);
         }
-        sendToPeer(peerName, {
-          type: "file_content",
-          path: safeRelativePath,
-          content,
-          isBinary,
-          hash: localHash,
-          from: nodeName,
-        });
+        const byteLength = Buffer.byteLength(content, "utf-8");
+        if (byteLength <= MAX_FILE_CONTENT_BYTES) {
+          sendToPeer(peerName, {
+            type: "file_content",
+            path: safeRelativePath,
+            content,
+            isBinary,
+            hash: localHash,
+            from: nodeName,
+          });
+          inFlightSends.set(`${peerName}:${safeRelativePath}`, {
+            peerName,
+            path: safeRelativePath,
+            hash: localHash || undefined,
+            sentAt: Date.now(),
+            mode: "direct",
+          });
+          notify({
+            type: "file_sent",
+            message: `Sent '${safeRelativePath}' to '${peerName}'.`,
+            peerName,
+            filePath: safeRelativePath,
+            data: { file: safeRelativePath, isBinary, hash: localHash, direction: "push", mode: "direct", bytes: byteLength },
+          });
+          return;
+        }
+
+        // 1 MiB keeps each WebSocket JSON payload below the raw-message cap.
+        // It is also divisible by 4, so base64 binary chunks remain decodable.
+        const CHUNK_SIZE = 1024 * 1024;
+        const totalChunks = Math.ceil(content.length / CHUNK_SIZE) || 1;
+        const transferId = createTransferId();
+
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+          sendToPeer(peerName, {
+            type: "file_chunk",
+            path: safeRelativePath,
+            transferId,
+            chunkIndex: i,
+            totalChunks,
+            chunk,
+            isBinary,
+            hash: localHash,
+            from: nodeName,
+          });
+          // Yield to event loop to prevent freezing on huge files
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        // After the first full send, save a shadow so the NEXT change to this
+        // file can be sent as a patch instead of another full file.
+        if (localHash && !isBinary) {
+          shadowStore.write(localHash, content);
+          syncState.recordSentToPeer(peerName, safeRelativePath, localHash);
+        }
+
         inFlightSends.set(`${peerName}:${safeRelativePath}`, {
           peerName,
           path: safeRelativePath,
           hash: localHash || undefined,
           sentAt: Date.now(),
+          mode: "chunked",
+          transferId,
         });
         notify({
           type: "file_sent",
-          message: `Sent '${safeRelativePath}' to '${peerName}'.`,
+          message: `Sent chunked '${safeRelativePath}' to '${peerName}' (${totalChunks} chunks).`,
           peerName,
           filePath: safeRelativePath,
-          data: { file: safeRelativePath, isBinary, direction: "push" },
+          data: { file: safeRelativePath, isBinary, hash: localHash, direction: "push", mode: "chunked", transferId, totalChunks, bytes: byteLength },
         });
       }
     },
@@ -1653,6 +1943,7 @@ export function createTransport(config: TransportConfig): TransportService {
       for (const [name, conn] of connections) {
         if (conn.socket.readyState === 3) {
           connections.delete(name);
+          clearPeerTransientState(name);
           notify({
             type: "peer_disconnected",
             message: `Peer '${name}' disconnected (${connections.size} remaining).`,
@@ -1685,28 +1976,7 @@ export function createTransport(config: TransportConfig): TransportService {
     },
 
     sendCapabilityExecute(peerName: string, capability: string, instruction: string, requestId?: string): string | null {
-      const conn = connections.get(peerName);
-      if (!conn?.approved || conn.socket.readyState !== 1) {
-        logger.warn(`Cannot send capability execution to '${peerName}': peer is not connected and approved.`);
-        return null;
-      }
-      const executionRequestId = requestId || createExecutionRequestId();
-      storePendingExecution({
-        requestId: executionRequestId,
-        peerName,
-        direction: "outgoing",
-        capability,
-        instruction,
-        from: nodeName,
-      });
-      sendToPeer(peerName, {
-        type: "capability_execute",
-        requestId: executionRequestId,
-        capability,
-        instruction,
-        from: nodeName,
-      });
-      return executionRequestId;
+      return sendCapabilityExecuteToPeer(peerName, capability, instruction, requestId);
     },
 
     respondToExecution(requestId: string, result?: unknown, error?: string): boolean {
@@ -1750,7 +2020,7 @@ export function createTransport(config: TransportConfig): TransportService {
       manifestProvider = provider;
     },
 
-    setFileWriter(writer: (relativePath: string, content: string, isBinary: boolean) => Promise<void>) {
+    setFileWriter(writer: (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) {
       fileWriter = writer;
     },
 

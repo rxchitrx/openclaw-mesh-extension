@@ -1,12 +1,14 @@
 import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
 import type { TrackedFile } from "../file-watcher.js";
+import { ensureTrackedDirectory, noTrackedDirectoryResponse, type TrackStateReader } from "./tracking-guard.js";
 
 export type SyncServices = {
   syncState: SyncStateService;
   transport: TransportService;
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
   getLocalManifest: () => TrackedFile[];
+  getTrackState: TrackStateReader;
 };
 
 export function createMeshSyncTool(services: SyncServices, _ctx: any) {
@@ -41,6 +43,10 @@ export function createMeshSyncTool(services: SyncServices, _ctx: any) {
       const { action, peerName, file, force } = toolParams;
       const connections = transport.getConnections();
       const now = new Date().toISOString();
+      const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+      if (!trackGuard.ok) {
+        return noTrackedDirectoryResponse(trackGuard);
+      }
 
       if (connections.length === 0) {
         return {

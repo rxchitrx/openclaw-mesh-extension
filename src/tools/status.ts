@@ -61,6 +61,9 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       message += `LOCAL NODE\n`;
       message += `  Name: ${localNode.name}\n`;
       message += `  Host: ${localNode.host}\n`;
+      message += `  Primary LAN IP: ${localNode.primaryAddress}\n`;
+      const additional = localNode.addresses.filter((address) => address !== localNode.primaryAddress);
+      message += `  Other local IPv4s: ${additional.length > 0 ? additional.join(", ") : "none"}\n`;
       message += `  Port: ${localNode.port}\n`;
       message += `  Capabilities: ${localCapabilities.length > 0 ? localCapabilities.join(", ") : "none"}\n\n`;
 
@@ -140,6 +143,9 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       message += `\n`;
 
       message += `FILE SYNC\n`;
+      if (!currentTrackDir) {
+        message += `  WARNING: no tracked directory is configured. File sync, diff, and broadcast actions will be refused until tracking is set.\n`;
+      }
       message += `  Watched: ${watchedFiles.length}\n`;
       message += `  Pending changes: ${pendingChanges.length}\n`;
       message += `  In-flight sends: ${inFlight.length}\n`;
@@ -150,7 +156,7 @@ export function createMeshStatusTool(services: MeshServices, _ctx: any) {
       if (pendingExecutions.length > 0) {
         message += `  Pending execution requests:\n`;
         for (const execution of pendingExecutions) {
-          message += `    ${execution.requestId} from ${execution.peerName}: ${execution.capability} (expires ${new Date(execution.expiresAt).toISOString()})\n`;
+          message += `    ${execution.requestId} ${execution.direction} ${execution.peerName}: ${execution.capability} (expires ${new Date(execution.expiresAt).toISOString()})\n`;
         }
       }
 

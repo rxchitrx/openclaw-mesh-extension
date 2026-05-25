@@ -272,7 +272,9 @@ export function createDiscovery(config) {
             return Array.from(peers.values());
         },
         getLocalNode() {
-            return { name: nodeName, host: getLocalIP(), port };
+            const primaryAddress = getLocalIP();
+            const addresses = getLocalIPv4Addresses();
+            return { name: nodeName, host: primaryAddress, port, primaryAddress, addresses };
         },
         notePeer(peer) {
             const normalizedHost = normalizePeerHost(peer.host || "");

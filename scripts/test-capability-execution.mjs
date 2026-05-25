@@ -126,10 +126,11 @@ try {
 
   const rightRespondTool = createMeshCapabilityRespondTool(right, {});
   const successResponse = await rightRespondTool.execute("respond-1", {
-    requestId: "exec-success",
     result: "tests passed",
   }, undefined, undefined);
   assert.equal(successResponse.details.ok, true);
+  assert.equal(successResponse.details.requestId, "exec-success");
+  assert.equal(successResponse.details.autoSelectedRequestId, true);
 
   await waitFor(
     () => leftNotifications.some((event) => event.type === "capability_execute_completed" && event.data?.requestId === "exec-success" && event.data?.result === "tests passed" && !event.data?.error),

@@ -5,6 +5,32 @@ const DEFAULT_DIR = path.join(os.homedir(), ".openclaw", "mesh");
 function statePath(baseDir) {
     return path.join(baseDir, "sync-state.json");
 }
+function peerSentHashesPath(baseDir) {
+    return path.join(baseDir, "peer-sent-hashes.json");
+}
+function loadPeerSentHashes(baseDir) {
+    try {
+        const raw = JSON.parse(fs.readFileSync(peerSentHashesPath(baseDir), "utf-8"));
+        if (!raw || typeof raw !== "object" || Array.isArray(raw))
+            return {};
+        // Validate shape: only keep well-formed entries
+        const result = {};
+        for (const [peer, files] of Object.entries(raw)) {
+            if (typeof peer !== "string" || !files || typeof files !== "object" || Array.isArray(files))
+                continue;
+            result[peer] = {};
+            for (const [filePath, hash] of Object.entries(files)) {
+                if (typeof filePath === "string" && typeof hash === "string" && hash.length > 0) {
+                    result[peer][filePath] = hash;
+                }
+            }
+        }
+        return result;
+    }
+    catch {
+        return {};
+    }
+}
 function ensureDir(dir) {
     fs.mkdirSync(dir, { recursive: true });
 }
@@ -81,6 +107,18 @@ export function createSyncState(config) {
     const lastSyncedHashes = new Map();
     const pendingChanges = [];
     const forceAllowSet = new Set();
+    // Per-peer sent hash tracking: peerName -> filePath -> hash
+    // Persisted separately so it survives extension restarts.
+    const peerSentHashes = loadPeerSentHashes(baseDir);
+    const savePeerSentHashes = () => {
+        try {
+            ensureDir(baseDir);
+            fs.writeFileSync(peerSentHashesPath(baseDir), JSON.stringify(peerSentHashes, null, 2), { mode: 0o600 });
+        }
+        catch (err) {
+            logger.warn?.(`Could not persist peer-sent hashes: ${err}`);
+        }
+    };
     const persisted = loadPersistedSyncState(baseDir);
     for (const version of persisted.fileVersions) {
         fileVersions.set(version.relativePath, version);
@@ -217,6 +255,25 @@ export function createSyncState(config) {
             }
             logger.info(`Marked ${fileVersions.size} file(s) as synced`);
             save();
+        },
+        recordSentToPeer(peerName, relativePath, hash) {
+            if (!peerSentHashes[peerName]) {
+                peerSentHashes[peerName] = {};
+            }
+            peerSentHashes[peerName][relativePath] = hash;
+            savePeerSentHashes();
+        },
+        getLastSentHashToPeer(peerName, relativePath) {
+            return peerSentHashes[peerName]?.[relativePath] ?? null;
+        },
+        getAllSentHashes() {
+            const hashes = new Set();
+            for (const files of Object.values(peerSentHashes)) {
+                for (const hash of Object.values(files)) {
+                    hashes.add(hash);
+                }
+            }
+            return hashes;
         },
     };
 }

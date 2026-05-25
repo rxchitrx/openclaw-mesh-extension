@@ -19,17 +19,26 @@ export function createMeshCapabilityRespondTool(transport, _ctx) {
                     description: "Optional error or denial reason to send back to the requester.",
                 },
             },
-            required: ["requestId"],
+            required: [],
         },
         execute: async (_toolCallId, toolParams, _signal, _onUpdate) => {
-            const requestId = toolParams?.requestId?.trim();
+            let requestId = toolParams?.requestId?.trim();
             const result = typeof toolParams?.result === "string" ? toolParams.result : undefined;
             const error = typeof toolParams?.error === "string" ? toolParams.error : undefined;
             if (!requestId) {
-                return {
-                    content: [{ type: "text", text: "A capability execution requestId is required." }],
-                    details: { ok: false, error: "missing_request_id" },
-                };
+                const incoming = transport.getPendingExecutions().filter((execution) => execution.direction === "incoming");
+                if (incoming.length === 1) {
+                    requestId = incoming[0].requestId;
+                }
+                else {
+                    const list = incoming.length > 0
+                        ? incoming.map((execution) => `  ${execution.requestId} from ${execution.peerName} | ${execution.capability}`).join("\n")
+                        : "  none";
+                    return {
+                        content: [{ type: "text", text: `A capability execution requestId is required when there are ${incoming.length} incoming pending requests.\n${list}` }],
+                        details: { ok: false, error: "missing_request_id", pendingIncomingRequests: incoming },
+                    };
+                }
             }
             const pending = transport.getPendingExecutions().find((execution) => execution.requestId === requestId);
             if (!pending) {
@@ -61,6 +70,7 @@ export function createMeshCapabilityRespondTool(transport, _ctx) {
                     capability: pending.capability,
                     result,
                     error,
+                    autoSelectedRequestId: !toolParams?.requestId?.trim(),
                 },
             };
         },

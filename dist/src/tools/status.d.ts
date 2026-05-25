@@ -39,6 +39,8 @@ export declare function createMeshStatusTool(services: MeshServices, _ctx: any):
                     name: string;
                     host: string;
                     port: number;
+                    primaryAddress: string;
+                    addresses: string[];
                 };
                 localCapabilities: string[];
                 trackDir: string;

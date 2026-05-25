@@ -31,7 +31,12 @@ export function createMeshEventsTool(eventStore, _ctx) {
                 const status = event.acknowledged ? "acknowledged" : event.delivered ? "delivered" : "queued";
                 const peer = event.peerName ? ` | peer: ${event.peerName}` : "";
                 const filePath = event.filePath ? ` | file: ${event.filePath}` : "";
-                message += `- ${event.id} | ${event.kind} | ${status}${peer}${filePath}\n  ${event.message}\n`;
+                const detail = event.details?.requestId
+                    ? ` | request: ${event.details.requestId}`
+                    : event.details?.reason
+                        ? ` | reason: ${event.details.reason}`
+                        : "";
+                message += `- ${event.id} | ${event.kind} | ${status}${peer}${filePath}${detail}\n  ${event.message}\n`;
             }
             return {
                 content: [{ type: "text", text: message.trimEnd() }],
@@ -45,6 +50,7 @@ export function createMeshEventsTool(eventStore, _ctx) {
                         acknowledged: event.acknowledged,
                         delivered: event.delivered,
                         createdAt: event.createdAt,
+                        details: event.details,
                     })),
                 },
             };

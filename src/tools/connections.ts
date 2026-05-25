@@ -91,7 +91,7 @@ export function createMeshConnectionsTool(
       message += `\nPENDING EXECUTIONS\n`;
       if (pendingExecutions.length > 0) {
         for (const execution of pendingExecutions) {
-          message += `  ${execution.requestId} from ${execution.peerName} | ${execution.capability} | expires ${new Date(execution.expiresAt).toISOString()}\n`;
+          message += `  ${execution.requestId} ${execution.direction} ${execution.peerName} | ${execution.capability} | expires ${new Date(execution.expiresAt).toISOString()}\n`;
         }
       } else {
         message += `  none\n`;

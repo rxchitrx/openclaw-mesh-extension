@@ -1,4 +1,5 @@
 import { createDiffPreview } from "../diff-engine.js";
+import { ensureTrackedDirectory, noTrackedDirectoryResponse } from "./tracking-guard.js";
 export function createMeshDiffTool(services, _ctx) {
     return {
         label: "Mesh Diff",
@@ -38,6 +39,10 @@ export function createMeshDiffTool(services, _ctx) {
             const contextLines = Math.max(0, Math.min(toolParams?.contextLines ?? 3, 20));
             const maxBytes = Math.max(1024, toolParams?.maxBytes ?? 200000);
             const connections = transport.getConnections();
+            const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+            if (!trackGuard.ok) {
+                return noTrackedDirectoryResponse(trackGuard);
+            }
             if (connections.length === 0) {
                 return {
                     content: [{ type: "text", text: "No connected peers to compare with. Approve a peer connection first." }],

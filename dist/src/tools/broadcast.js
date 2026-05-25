@@ -1,3 +1,4 @@
+import { ensureTrackedDirectory, noTrackedDirectoryResponse } from "./tracking-guard.js";
 export function createMeshBroadcastTool(services, _ctx) {
     return {
         label: "Mesh Broadcast",
@@ -17,6 +18,10 @@ export function createMeshBroadcastTool(services, _ctx) {
             const { syncState, transport, getFileContent } = services;
             const file = toolParams?.file;
             const connections = transport.getConnections();
+            const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+            if (!trackGuard.ok) {
+                return noTrackedDirectoryResponse(trackGuard);
+            }
             if (connections.length === 0) {
                 return {
                     content: [{ type: "text", text: "No approved peers connected. Approve a peer connection first." }],

@@ -2,12 +2,14 @@ import type { TransportService } from "../transport.js";
 import type { SyncStateService } from "../sync-state.js";
 import type { TrackedFile } from "../file-watcher.js";
 import { createDiffPreview, type DiffPreview } from "../diff-engine.js";
+import { ensureTrackedDirectory, noTrackedDirectoryResponse, type TrackStateReader } from "./tracking-guard.js";
 
 export type DiffServices = {
   transport: TransportService;
   syncState: SyncStateService;
   getLocalManifest: () => TrackedFile[];
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
+  getTrackState: TrackStateReader;
 };
 
 export function createMeshDiffTool(services: DiffServices, _ctx: any) {
@@ -49,6 +51,10 @@ export function createMeshDiffTool(services: DiffServices, _ctx: any) {
       const contextLines = Math.max(0, Math.min(toolParams?.contextLines ?? 3, 20));
       const maxBytes = Math.max(1024, toolParams?.maxBytes ?? 200000);
       const connections = transport.getConnections();
+      const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+      if (!trackGuard.ok) {
+        return noTrackedDirectoryResponse(trackGuard);
+      }
 
       if (connections.length === 0) {
         return {

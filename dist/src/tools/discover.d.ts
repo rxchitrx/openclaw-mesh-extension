@@ -107,6 +107,8 @@ export declare function createMeshDiscoverTool(services: DiscoverServices, _ctx:
                 name: string;
                 host: string;
                 port: number;
+                primaryAddress: string;
+                addresses: string[];
             };
             peers: PeerInfo[];
             connections: string[];

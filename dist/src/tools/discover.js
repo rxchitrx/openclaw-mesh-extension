@@ -68,6 +68,9 @@ export function createMeshDiscoverTool(services, _ctx) {
             message += `LOCAL NODE\n`;
             message += `  Name: ${localNode.name}\n`;
             message += `  Host: ${localNode.host}\n`;
+            message += `  Primary LAN IP: ${localNode.primaryAddress}\n`;
+            const additional = localNode.addresses.filter((address) => address !== localNode.primaryAddress);
+            message += `  Other local IPv4s: ${additional.length > 0 ? additional.join(", ") : "none"}\n`;
             message += `  Port: ${localNode.port}\n\n`;
             if (peers.length === 0 && connections.length === 0 && pending.length === 0) {
                 message += `PEERS: None found\n`;

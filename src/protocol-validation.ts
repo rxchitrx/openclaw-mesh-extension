@@ -18,6 +18,7 @@ const MESH_MESSAGE_TYPES = new Set([
   "manifest",
   "manifest_request",
   "file_content",
+  "file_chunk",
   "file_preview_request",
   "file_preview_response",
   "file_content_request",
@@ -61,6 +62,17 @@ export type FileContentMessage = BaseMeshMessage & {
   type: "file_content";
   path: string;
   content: string;
+  isBinary: boolean;
+  hash?: string;
+};
+
+export type FileChunkMessage = BaseMeshMessage & {
+  type: "file_chunk";
+  path: string;
+  transferId?: string;
+  chunkIndex: number;
+  totalChunks: number;
+  chunk: string;
   isBinary: boolean;
   hash?: string;
 };
@@ -277,6 +289,41 @@ export function validateFileContent(message: Record<string, unknown>): Validatio
       type: "file_content",
       path: path.value,
       content: message.content,
+      isBinary: message.isBinary,
+      hash: hash.value,
+    },
+  };
+}
+
+export function validateFileChunk(message: Record<string, unknown>): ValidationResult<FileChunkMessage> {
+  const path = safePath(message.path);
+  if (!path.ok) return path;
+
+  const chunkIndex = message.chunkIndex;
+  const totalChunks = message.totalChunks;
+  if (typeof chunkIndex !== "number" || !Number.isInteger(chunkIndex)) return fail("invalid_message", "chunkIndex must be an integer");
+  if (typeof totalChunks !== "number" || !Number.isInteger(totalChunks)) return fail("invalid_message", "totalChunks must be an integer");
+  if (totalChunks <= 0) return fail("invalid_message", "totalChunks must be positive");
+  if (chunkIndex < 0) return fail("invalid_message", "chunkIndex must be non-negative");
+  if (chunkIndex >= totalChunks) return fail("invalid_message", "chunkIndex must be less than totalChunks");
+  if (typeof message.chunk !== "string") return fail("invalid_message", "chunk must be a string");
+  if (stringByteLength(message.chunk) > MAX_RAW_MESSAGE_BYTES) return fail("payload_too_large", "chunk exceeds raw message limit");
+  if (message.isBinary !== true && message.isBinary !== false) return fail("invalid_message", "isBinary must be a boolean");
+
+  const hash = optionalHash(message.hash);
+  if (!hash.ok) return hash;
+  const transferId = boundedString(message.transferId, "transferId", 128);
+  if (!transferId.ok) return transferId;
+
+  return {
+    ok: true,
+    value: {
+      type: "file_chunk",
+      path: path.value,
+      transferId: transferId.value,
+      chunkIndex,
+      totalChunks,
+      chunk: message.chunk,
       isBinary: message.isBinary,
       hash: hash.value,
     },

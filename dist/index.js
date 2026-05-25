@@ -373,7 +373,7 @@ const meshPlugin = {
         });
         transport.setFileContentProvider(async (relativePath) => getFileContent(relativePath));
         transport.setManifestProvider(() => getLocalManifest());
-        transport.setFileWriter(async (relativePath, content, isBinary) => {
+        transport.setFileWriter(async (relativePath, contentOrTempPath, isBinary, isTempFile) => {
             if (!currentTrackDir) {
                 logger.warn(`Cannot write file ${relativePath}: no track directory set`);
                 throw new Error("no_track_directory");
@@ -385,11 +385,14 @@ const meshPlugin = {
             }
             const dir = path.dirname(filePath);
             await fs.promises.mkdir(dir, { recursive: true });
-            if (isBinary) {
-                await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+            if (isTempFile) {
+                await fs.promises.rename(contentOrTempPath, filePath);
+            }
+            else if (isBinary) {
+                await fs.promises.writeFile(filePath, Buffer.from(contentOrTempPath, "base64"));
             }
             else {
-                await fs.promises.writeFile(filePath, content, "utf-8");
+                await fs.promises.writeFile(filePath, contentOrTempPath, "utf-8");
             }
             logger.info(`Wrote received file to disk: ${filePath}`);
         });
@@ -418,13 +421,13 @@ const meshPlugin = {
         registerMeshTool("mesh_advertise", (ctx) => createMeshAdvertiseTool({ capabilityRegistry, transport }, ctx));
         registerMeshTool("mesh_capability_request", (ctx) => createMeshCapabilityRequestTool(transport, ctx));
         registerMeshTool("mesh_capability_respond", (ctx) => createMeshCapabilityRespondTool(transport, ctx));
-        registerMeshTool("mesh_broadcast", (ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
-        registerMeshTool("mesh_sync", (ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
+        registerMeshTool("mesh_broadcast", (ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest, getTrackState }, ctx));
+        registerMeshTool("mesh_sync", (ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest, getTrackState }, ctx));
         registerMeshTool("mesh_track", (ctx) => createMeshTrackTool(getTrackState, ctx));
         registerMeshTool("mesh_approve", (ctx) => createMeshApproveTool(transport, ctx));
         registerMeshTool("mesh_reject", (ctx) => createMeshRejectTool(transport, ctx));
         registerMeshTool("mesh_connections", (ctx) => createMeshConnectionsTool({ transport, eventStore }, ctx));
-        registerMeshTool("mesh_diff", (ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx));
+        registerMeshTool("mesh_diff", (ctx) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent, getTrackState }, ctx));
         registerMeshTool("mesh_events", (ctx) => createMeshEventsTool(eventStore, ctx));
         registerMeshTool("mesh_ack", (ctx) => createMeshAckTool(eventStore, ctx));
         api.on("gateway_start", async () => {
@@ -441,14 +444,6 @@ const meshPlugin = {
                 }
                 setTimeout(async () => {
                     await discovery.scan();
-                    const discoveredPeers = discovery.getPeers();
-                    for (const peer of discoveredPeers) {
-                        const connections = transport.getConnections();
-                        const pending = transport.getPendingConnections();
-                        if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
-                            await transport.connectToPeer(peer);
-                        }
-                    }
                 }, 5000);
             }
             catch (err) {
@@ -473,13 +468,7 @@ const meshPlugin = {
             const pendingChanges = syncState.getPendingChanges();
             logger.debug(`Heartbeat: ${peers.length} peers, ${connections.length} connections, ${pendingChanges.length} pending changes, ${pending.length} pending approvals`);
             try {
-                await discovery.scan();
-                await transport.maintainConnections();
-                for (const peer of discovery.getPeers()) {
-                    if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
-                        await transport.connectToPeer(peer);
-                    }
-                }
+                logger.debug("Heartbeat observed mesh state without auto-discovery or auto-connect.");
             }
             catch (err) {
                 logger.warn(`Heartbeat error: ${err}`);

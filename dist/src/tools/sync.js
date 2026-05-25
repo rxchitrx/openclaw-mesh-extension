@@ -1,3 +1,4 @@
+import { ensureTrackedDirectory, noTrackedDirectoryResponse } from "./tracking-guard.js";
 export function createMeshSyncTool(services, _ctx) {
     return {
         label: "Mesh Sync",
@@ -30,6 +31,10 @@ export function createMeshSyncTool(services, _ctx) {
             const { action, peerName, file, force } = toolParams;
             const connections = transport.getConnections();
             const now = new Date().toISOString();
+            const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+            if (!trackGuard.ok) {
+                return noTrackedDirectoryResponse(trackGuard);
+            }
             if (connections.length === 0) {
                 return {
                     content: [{ type: "text", text: "No approved peers connected. Approve a peer connection first." }],

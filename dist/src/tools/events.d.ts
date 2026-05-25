@@ -35,6 +35,7 @@ export declare function createMeshEventsTool(eventStore: MeshEventStore, _ctx: a
                 acknowledged: boolean;
                 delivered: boolean;
                 createdAt: number;
+                details: Record<string, unknown>;
             }[];
         };
     }>;

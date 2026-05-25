@@ -42,6 +42,12 @@ export type SyncStateService = {
   markForceAllow: (relativePath: string) => void;
   consumeForceAllow: (relativePath: string) => boolean;
   markAllSynced: () => void;
+  /** Records the hash of what we last successfully sent to a specific peer for a file. */
+  recordSentToPeer: (peerName: string, relativePath: string, hash: string) => void;
+  /** Returns the hash of what we last sent to a specific peer for a file, or null if never sent. */
+  getLastSentHashToPeer: (peerName: string, relativePath: string) => string | null;
+  /** Returns all hashes that are currently referenced by any peer-sent record (for shadow pruning). */
+  getAllSentHashes: () => Set<string>;
 };
 
 type PersistedSyncState = {
@@ -50,10 +56,39 @@ type PersistedSyncState = {
   pendingChanges: PendingChange[];
 };
 
+// Peer-sent hashes are stored in a separate file to keep the main state clean.
+// Shape: { [peerName]: { [relativePath]: hash } }
+type PersistedPeerSentHashes = Record<string, Record<string, string>>;
+
 const DEFAULT_DIR = path.join(os.homedir(), ".openclaw", "mesh");
 
 function statePath(baseDir: string): string {
   return path.join(baseDir, "sync-state.json");
+}
+
+function peerSentHashesPath(baseDir: string): string {
+  return path.join(baseDir, "peer-sent-hashes.json");
+}
+
+function loadPeerSentHashes(baseDir: string): PersistedPeerSentHashes {
+  try {
+    const raw = JSON.parse(fs.readFileSync(peerSentHashesPath(baseDir), "utf-8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    // Validate shape: only keep well-formed entries
+    const result: PersistedPeerSentHashes = {};
+    for (const [peer, files] of Object.entries(raw)) {
+      if (typeof peer !== "string" || !files || typeof files !== "object" || Array.isArray(files)) continue;
+      result[peer] = {};
+      for (const [filePath, hash] of Object.entries(files as Record<string, unknown>)) {
+        if (typeof filePath === "string" && typeof hash === "string" && hash.length > 0) {
+          result[peer][filePath] = hash;
+        }
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 function ensureDir(dir: string) {
@@ -127,6 +162,23 @@ export function createSyncState(config: SyncStateConfig): SyncStateService {
   const lastSyncedHashes = new Map<string, string>();
   const pendingChanges: PendingChange[] = [];
   const forceAllowSet = new Set<string>();
+
+  // Per-peer sent hash tracking: peerName -> filePath -> hash
+  // Persisted separately so it survives extension restarts.
+  const peerSentHashes: PersistedPeerSentHashes = loadPeerSentHashes(baseDir);
+
+  const savePeerSentHashes = () => {
+    try {
+      ensureDir(baseDir);
+      fs.writeFileSync(
+        peerSentHashesPath(baseDir),
+        JSON.stringify(peerSentHashes, null, 2),
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      logger.warn?.(`Could not persist peer-sent hashes: ${err}`);
+    }
+  };
 
   const persisted = loadPersistedSyncState(baseDir);
   for (const version of persisted.fileVersions) {
@@ -282,6 +334,28 @@ export function createSyncState(config: SyncStateConfig): SyncStateService {
       }
       logger.info(`Marked ${fileVersions.size} file(s) as synced`);
       save();
+    },
+
+    recordSentToPeer(peerName: string, relativePath: string, hash: string) {
+      if (!peerSentHashes[peerName]) {
+        peerSentHashes[peerName] = {};
+      }
+      peerSentHashes[peerName][relativePath] = hash;
+      savePeerSentHashes();
+    },
+
+    getLastSentHashToPeer(peerName: string, relativePath: string): string | null {
+      return peerSentHashes[peerName]?.[relativePath] ?? null;
+    },
+
+    getAllSentHashes(): Set<string> {
+      const hashes = new Set<string>();
+      for (const files of Object.values(peerSentHashes)) {
+        for (const hash of Object.values(files)) {
+          hashes.add(hash);
+        }
+      }
+      return hashes;
     },
   };
 }

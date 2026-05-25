@@ -1,6 +1,7 @@
 import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
 import type { TrackedFile } from "../file-watcher.js";
+import { type TrackStateReader } from "./tracking-guard.js";
 export type SyncServices = {
     syncState: SyncStateService;
     transport: TransportService;
@@ -9,6 +10,7 @@ export type SyncServices = {
         isBinary: boolean;
     } | null>;
     getLocalManifest: () => TrackedFile[];
+    getTrackState: TrackStateReader;
 };
 export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
     label: string;
@@ -42,6 +44,17 @@ export declare function createMeshSyncTool(services: SyncServices, _ctx: any): {
         file?: string;
         force?: boolean;
     }, _signal: any, _onUpdate: any) => Promise<{
+        content: {
+            type: "text";
+            text: string;
+        }[];
+        details: {
+            ok: boolean;
+            error: string;
+            clearedStalePendingChanges: number;
+            stalePendingFiles: string[];
+        };
+    } | {
         content: {
             type: "text";
             text: string;

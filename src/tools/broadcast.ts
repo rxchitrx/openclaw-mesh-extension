@@ -1,12 +1,14 @@
 import type { SyncStateService } from "../sync-state.js";
 import type { TransportService } from "../transport.js";
 import type { TrackedFile } from "../file-watcher.js";
+import { ensureTrackedDirectory, noTrackedDirectoryResponse, type TrackStateReader } from "./tracking-guard.js";
 
 export type BroadcastServices = {
   syncState: SyncStateService;
   transport: TransportService;
   getFileContent: (relativePath: string) => Promise<{ content: string; isBinary: boolean } | null>;
   getLocalManifest: () => TrackedFile[];
+  getTrackState: TrackStateReader;
 };
 
 export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) {
@@ -28,6 +30,10 @@ export function createMeshBroadcastTool(services: BroadcastServices, _ctx: any) 
       const { syncState, transport, getFileContent } = services;
       const file = toolParams?.file;
       const connections = transport.getConnections();
+      const trackGuard = ensureTrackedDirectory(syncState, services.getTrackState);
+      if (!trackGuard.ok) {
+        return noTrackedDirectoryResponse(trackGuard);
+      }
 
       if (connections.length === 0) {
         return {

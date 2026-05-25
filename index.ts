@@ -436,7 +436,7 @@ const meshPlugin = {
 
     transport.setFileContentProvider(async (relativePath: string) => getFileContent(relativePath));
     transport.setManifestProvider(() => getLocalManifest());
-    transport.setFileWriter(async (relativePath: string, content: string, isBinary: boolean) => {
+    transport.setFileWriter(async (relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => {
       if (!currentTrackDir) {
         logger.warn(`Cannot write file ${relativePath}: no track directory set`);
         throw new Error("no_track_directory");
@@ -448,10 +448,12 @@ const meshPlugin = {
       }
       const dir = path.dirname(filePath);
       await fs.promises.mkdir(dir, { recursive: true });
-      if (isBinary) {
-        await fs.promises.writeFile(filePath, Buffer.from(content, "base64"));
+      if (isTempFile) {
+        await fs.promises.rename(contentOrTempPath, filePath);
+      } else if (isBinary) {
+        await fs.promises.writeFile(filePath, Buffer.from(contentOrTempPath, "base64"));
       } else {
-        await fs.promises.writeFile(filePath, content, "utf-8");
+        await fs.promises.writeFile(filePath, contentOrTempPath, "utf-8");
       }
       logger.info(`Wrote received file to disk: ${filePath}`);
     });
@@ -483,13 +485,13 @@ const meshPlugin = {
     registerMeshTool("mesh_advertise", (ctx: any) => createMeshAdvertiseTool({ capabilityRegistry, transport }, ctx));
     registerMeshTool("mesh_capability_request", (ctx: any) => createMeshCapabilityRequestTool(transport, ctx));
     registerMeshTool("mesh_capability_respond", (ctx: any) => createMeshCapabilityRespondTool(transport, ctx));
-    registerMeshTool("mesh_broadcast", (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
-    registerMeshTool("mesh_sync", (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
+    registerMeshTool("mesh_broadcast", (ctx: any) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest, getTrackState }, ctx));
+    registerMeshTool("mesh_sync", (ctx: any) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest, getTrackState }, ctx));
     registerMeshTool("mesh_track", (ctx: any) => createMeshTrackTool(getTrackState, ctx));
     registerMeshTool("mesh_approve", (ctx: any) => createMeshApproveTool(transport, ctx));
     registerMeshTool("mesh_reject", (ctx: any) => createMeshRejectTool(transport, ctx));
     registerMeshTool("mesh_connections", (ctx: any) => createMeshConnectionsTool({ transport, eventStore }, ctx));
-    registerMeshTool("mesh_diff", (ctx: any) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent }, ctx));
+    registerMeshTool("mesh_diff", (ctx: any) => createMeshDiffTool({ transport, syncState, getLocalManifest, getFileContent, getTrackState }, ctx));
     registerMeshTool("mesh_events", (ctx: any) => createMeshEventsTool(eventStore, ctx));
     registerMeshTool("mesh_ack", (ctx: any) => createMeshAckTool(eventStore, ctx));
 
@@ -508,14 +510,6 @@ const meshPlugin = {
 
         setTimeout(async () => {
           await discovery.scan();
-          const discoveredPeers = discovery.getPeers();
-          for (const peer of discoveredPeers) {
-            const connections = transport.getConnections();
-            const pending = transport.getPendingConnections();
-            if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
-              await transport.connectToPeer(peer);
-            }
-          }
         }, 5000);
       } catch (err) {
         logger.error(`Failed to start mesh services: ${err}`);
@@ -544,14 +538,7 @@ const meshPlugin = {
       );
 
       try {
-        await discovery.scan();
-        await transport.maintainConnections();
-
-        for (const peer of discovery.getPeers()) {
-          if (!connections.includes(peer.name) && !pending.some((item) => item.peerName === peer.name)) {
-            await transport.connectToPeer(peer);
-          }
-        }
+        logger.debug("Heartbeat observed mesh state without auto-discovery or auto-connect.");
       } catch (err) {
         logger.warn(`Heartbeat error: ${err}`);
       }

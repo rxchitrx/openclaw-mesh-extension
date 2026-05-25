@@ -21,18 +21,26 @@ export function createMeshCapabilityRespondTool(transport: Pick<TransportService
           description: "Optional error or denial reason to send back to the requester.",
         },
       },
-      required: ["requestId"] as string[],
+      required: [] as string[],
     },
-    execute: async (_toolCallId: string, toolParams: { requestId: string; result?: string; error?: string }, _signal: any, _onUpdate: any) => {
-      const requestId = toolParams?.requestId?.trim();
+    execute: async (_toolCallId: string, toolParams: { requestId?: string; result?: string; error?: string }, _signal: any, _onUpdate: any) => {
+      let requestId = toolParams?.requestId?.trim();
       const result = typeof toolParams?.result === "string" ? toolParams.result : undefined;
       const error = typeof toolParams?.error === "string" ? toolParams.error : undefined;
 
       if (!requestId) {
-        return {
-          content: [{ type: "text" as const, text: "A capability execution requestId is required." }],
-          details: { ok: false, error: "missing_request_id" },
-        };
+        const incoming = transport.getPendingExecutions().filter((execution) => execution.direction === "incoming");
+        if (incoming.length === 1) {
+          requestId = incoming[0].requestId;
+        } else {
+          const list = incoming.length > 0
+            ? incoming.map((execution) => `  ${execution.requestId} from ${execution.peerName} | ${execution.capability}`).join("\n")
+            : "  none";
+          return {
+            content: [{ type: "text" as const, text: `A capability execution requestId is required when there are ${incoming.length} incoming pending requests.\n${list}` }],
+            details: { ok: false, error: "missing_request_id", pendingIncomingRequests: incoming },
+          };
+        }
       }
 
       const pending = transport.getPendingExecutions().find((execution) => execution.requestId === requestId);
@@ -67,6 +75,7 @@ export function createMeshCapabilityRespondTool(transport: Pick<TransportService
           capability: pending.capability,
           result,
           error,
+          autoSelectedRequestId: !toolParams?.requestId?.trim(),
         },
       };
     },

@@ -22,7 +22,7 @@ export declare function createMeshCapabilityRespondTool(transport: Pick<Transpor
         required: string[];
     };
     execute: (_toolCallId: string, toolParams: {
-        requestId: string;
+        requestId?: string;
         result?: string;
         error?: string;
     }, _signal: any, _onUpdate: any) => Promise<{
@@ -33,10 +33,12 @@ export declare function createMeshCapabilityRespondTool(transport: Pick<Transpor
         details: {
             ok: boolean;
             error: string;
+            pendingIncomingRequests: import("../transport.js").PendingExecution[];
             requestId?: undefined;
             peerName?: undefined;
             capability?: undefined;
             result?: undefined;
+            autoSelectedRequestId?: undefined;
         };
     } | {
         content: {
@@ -47,9 +49,11 @@ export declare function createMeshCapabilityRespondTool(transport: Pick<Transpor
             ok: boolean;
             error: string;
             requestId: string;
+            pendingIncomingRequests?: undefined;
             peerName?: undefined;
             capability?: undefined;
             result?: undefined;
+            autoSelectedRequestId?: undefined;
         };
     } | {
         content: {
@@ -63,6 +67,8 @@ export declare function createMeshCapabilityRespondTool(transport: Pick<Transpor
             capability: string;
             result: string;
             error: string;
+            autoSelectedRequestId: boolean;
+            pendingIncomingRequests?: undefined;
         };
     }>;
 };

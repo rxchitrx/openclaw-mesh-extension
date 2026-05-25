@@ -25,7 +25,7 @@ export type DiscoveryService = {
   stop: () => Promise<void>;
   scan: () => Promise<void>;
   getPeers: () => PeerInfo[];
-  getLocalNode: () => { name: string; host: string; port: number };
+  getLocalNode: () => { name: string; host: string; port: number; primaryAddress: string; addresses: string[] };
   notePeer: (peer: { name: string; host: string; port?: number; source?: "mdns" | "transport" | "subnet-scan" }) => void;
 };
 
@@ -287,7 +287,9 @@ export function createDiscovery(config: DiscoveryConfig): DiscoveryService {
     },
 
     getLocalNode() {
-      return { name: nodeName, host: getLocalIP(), port };
+      const primaryAddress = getLocalIP();
+      const addresses = getLocalIPv4Addresses();
+      return { name: nodeName, host: primaryAddress, port, primaryAddress, addresses };
     },
 
     notePeer(peer) {
