@@ -15,6 +15,7 @@ export declare class WebRTCTransport implements PeerTransport {
     private errorHandler?;
     constructor(localPeerName: string, remotePeerName: string, signalingClient: SignalingClient, isInitiator: boolean, logger: any);
     private setupPeerConnection;
+    private earlyMessages;
     private setupDataChannel;
     initiate(): Promise<void>;
     handleOffer(offer: any): Promise<void>;

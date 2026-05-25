@@ -35,6 +35,13 @@ export class SignalingServer {
                 type: "peer_join",
                 from: registeredPeerName
               }, registeredPeerName);
+
+              // Send the new peer the list of already connected peers
+              for (const [existingPeerName, existingWs] of this.peers) {
+                if (existingPeerName !== registeredPeerName && existingWs.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "peer_join", from: existingPeerName }));
+                }
+              }
               break;
 
             case "signal_offer":

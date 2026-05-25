@@ -5,7 +5,7 @@ export class SignalingServer {
     logger;
     constructor(port, logger) {
         this.logger = logger;
-        this.wss = new WebSocketServer({ port, maxPayload: 65536 });
+        this.wss = new WebSocketServer({ port, host: "::", maxPayload: 65536 });
         this.wss.on("connection", (ws) => {
             let registeredPeerName = null;
             ws.on("message", (data) => {
@@ -28,6 +28,12 @@ export class SignalingServer {
                                 type: "peer_join",
                                 from: registeredPeerName
                             }, registeredPeerName);
+                            // Send the new peer the list of already connected peers
+                            for (const [existingPeerName, existingWs] of this.peers) {
+                                if (existingPeerName !== registeredPeerName && existingWs.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({ type: "peer_join", from: existingPeerName }));
+                                }
+                            }
                             break;
                         case "signal_offer":
                         case "signal_answer":
@@ -48,13 +54,15 @@ export class SignalingServer {
             });
             ws.on("close", () => {
                 if (registeredPeerName) {
-                    this.peers.delete(registeredPeerName);
-                    this.logger.info(`[SIGNAL] Peer disconnected: ${registeredPeerName}`);
-                    // Broadcast leave to all other peers
-                    this.broadcast({
-                        type: "peer_leave",
-                        from: registeredPeerName
-                    });
+                    if (this.peers.get(registeredPeerName) === ws) {
+                        this.peers.delete(registeredPeerName);
+                        this.logger.info(`[SIGNAL] Peer disconnected: ${registeredPeerName}`);
+                        // Broadcast leave to all other peers
+                        this.broadcast({
+                            type: "peer_leave",
+                            from: registeredPeerName
+                        });
+                    }
                 }
             });
         });

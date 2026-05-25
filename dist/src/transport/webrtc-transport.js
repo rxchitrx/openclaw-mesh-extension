@@ -43,11 +43,15 @@ export class WebRTCTransport {
             }
         });
     }
+    earlyMessages = [];
     setupDataChannel(channel) {
         channel.message.subscribe((data) => {
             const raw = Buffer.isBuffer(data) ? data.toString("utf-8") : data;
             if (this.messageHandler) {
                 this.messageHandler(raw);
+            }
+            else {
+                this.earlyMessages.push(raw);
             }
         });
         channel.stateChanged.subscribe((state) => {
@@ -132,6 +136,11 @@ export class WebRTCTransport {
     }
     onMessage(handler) {
         this.messageHandler = handler;
+        while (this.earlyMessages.length > 0) {
+            const raw = this.earlyMessages.shift();
+            if (raw)
+                handler(raw);
+        }
     }
     onDisconnect(handler) {
         this.disconnectHandler = handler;

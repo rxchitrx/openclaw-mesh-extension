@@ -16,15 +16,25 @@ export class SignalingClient {
     async connect(serverUrl) {
         this.serverUrl = serverUrl;
         this.isIntentionalDisconnect = false;
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         return this.doConnect();
     }
     async doConnect() {
         const wsModule = await import("ws");
         return new Promise((resolve, reject) => {
+            let isResolved = false;
             this.ws = new wsModule.default(this.serverUrl);
             this.ws.on("open", () => {
                 this.logger.info(`[SIGNAL] Connected to signaling server at ${this.serverUrl}`);
                 this.reconnectAttempts = 0;
+                isResolved = true;
                 this.send({ type: "register", from: this.localNodeName });
                 resolve();
             });
@@ -55,12 +65,18 @@ export class SignalingClient {
             });
             this.ws.on("error", (err) => {
                 this.logger.error(`[SIGNAL] Connection error: ${err}`);
-                if (this.reconnectAttempts === 0)
+                if (!isResolved) {
+                    isResolved = true;
                     reject(err);
+                }
             });
             this.ws.on("close", () => {
                 this.logger.info(`[SIGNAL] Disconnected from signaling server.`);
                 this.ws = null;
+                if (!isResolved) {
+                    isResolved = true;
+                    reject(new Error("Connection closed before opening"));
+                }
                 this.scheduleReconnect();
             });
         });

@@ -59,11 +59,15 @@ export class WebRTCTransport implements PeerTransport {
     });
   }
 
+  private earlyMessages: string[] = [];
+
   private setupDataChannel(channel: any) {
     channel.message.subscribe((data: any) => {
       const raw = Buffer.isBuffer(data) ? data.toString("utf-8") : data;
       if (this.messageHandler) {
         this.messageHandler(raw);
+      } else {
+        this.earlyMessages.push(raw);
       }
     });
 
@@ -157,6 +161,10 @@ export class WebRTCTransport implements PeerTransport {
 
   onMessage(handler: (data: string) => void): void {
     this.messageHandler = handler;
+    while (this.earlyMessages.length > 0) {
+      const raw = this.earlyMessages.shift();
+      if (raw) handler(raw);
+    }
   }
 
   onDisconnect(handler: () => void): void {

@@ -24,9 +24,9 @@ const logger = {
 async function run() {
   console.log(`Starting headless mesh node '${nodeName}' tracking directory: ${trackDir}`);
 
-  const discovery = createDiscovery({ nodeName, port: 18790, logger });
+  const discovery = createDiscovery({ nodeName, port: 18792, logger });
   const syncState = createSyncState({ nodeName, logger });
-  const transport = createTransport({ nodeName, port: 18790, syncState, logger });
+  const transport = createTransport({ nodeName, port: 18792, syncState, logger });
 
   transport.setWebRTCDialer(async (peerName) => {
     return await discovery.initiateWebRTCConnection(peerName);
