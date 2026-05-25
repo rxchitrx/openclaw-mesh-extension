@@ -11,6 +11,7 @@ import { resolveInsideRoot } from "./src/path-safety.js";
 import { createMeshAdvertiseTool } from "./src/tools/advertise.js";
 import { createMeshApproveTool } from "./src/tools/approve.js";
 import { createMeshConnectionsTool } from "./src/tools/connections.js";
+import { createMeshCapabilityRequestTool } from "./src/tools/capability-request.js";
 import { createMeshCapabilityRespondTool } from "./src/tools/capability-respond.js";
 import { createMeshDiffTool } from "./src/tools/diff.js";
 import { createMeshDiscoverTool } from "./src/tools/discover.js";
@@ -415,6 +416,7 @@ const meshPlugin = {
         registerMeshTool("mesh_discover", (ctx) => createMeshDiscoverTool({ discovery, transport }, ctx));
         registerMeshTool("mesh_status", (ctx) => createMeshStatusTool({ discovery, transport, syncState, getTrackState, capabilityRegistry }, ctx));
         registerMeshTool("mesh_advertise", (ctx) => createMeshAdvertiseTool({ capabilityRegistry, transport }, ctx));
+        registerMeshTool("mesh_capability_request", (ctx) => createMeshCapabilityRequestTool(transport, ctx));
         registerMeshTool("mesh_capability_respond", (ctx) => createMeshCapabilityRespondTool(transport, ctx));
         registerMeshTool("mesh_broadcast", (ctx) => createMeshBroadcastTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));
         registerMeshTool("mesh_sync", (ctx) => createMeshSyncTool({ syncState, transport, getFileContent, getLocalManifest }, ctx));

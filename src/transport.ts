@@ -309,6 +309,7 @@ export function createTransport(config: TransportConfig): TransportService {
       peerName: input.peerName,
       data: {
         requestId: input.requestId,
+        direction: input.direction,
         capability: input.capability,
         instruction: input.instruction,
         from: input.from,

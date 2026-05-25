@@ -7,6 +7,7 @@ const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mesh-capability-execut
 process.env.HOME = tempHome;
 
 const { createTransport } = await import("../dist/src/transport.js");
+const { createMeshCapabilityRequestTool } = await import("../dist/src/tools/capability-request.js");
 const { createMeshCapabilityRespondTool } = await import("../dist/src/tools/capability-respond.js");
 
 const basePort = 25000 + Math.floor(Math.random() * 1000);
@@ -85,7 +86,16 @@ try {
   await waitFor(() => third.getConnections().includes("node-b"), "third connected");
   await waitFor(() => right.getConnections().includes("node-c"), "right connected to third");
 
-  assert.equal(left.sendCapabilityExecute("node-b", "can:run-tests", "Run npm test", "exec-success"), "exec-success");
+  const leftRequestTool = createMeshCapabilityRequestTool(left, {});
+  const requestResponse = await leftRequestTool.execute("request-1", {
+    peerName: "node-b",
+    capability: "can:run-tests",
+    instruction: "Run npm test",
+    requestId: "exec-success",
+  }, undefined, undefined);
+  assert.equal(requestResponse.details.ok, true);
+  assert.equal(requestResponse.details.requestId, "exec-success");
+  assert.equal(requestResponse.details.providedRequestId, true);
 
   await waitFor(
     () => right.getPendingExecutions().some((execution) => execution.requestId === "exec-success"),

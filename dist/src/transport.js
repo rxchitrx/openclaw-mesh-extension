@@ -115,6 +115,7 @@ export function createTransport(config) {
             peerName: input.peerName,
             data: {
                 requestId: input.requestId,
+                direction: input.direction,
                 capability: input.capability,
                 instruction: input.instruction,
                 from: input.from,

@@ -140,6 +140,9 @@ export function formatUrgentMeshSystemEvent(event: MeshEventRecord): string {
     const capability = asString(event.details?.capability) ?? "unknown capability";
     const requestId = asString(event.details?.requestId);
     const requestLabel = requestId ? ` Request ID: ${requestId}.` : "";
+    if (event.details?.direction === "outgoing") {
+      return `[mesh] Capability execution request sent to peer${peerLabel}: ${capability}.${requestLabel} Tell the user the request is pending and no local execution was performed.`;
+    }
     return `[mesh] Remote capability execution requested by peer${peerLabel}: ${capability}.${requestLabel} Tell the user immediately and ask whether/how to handle it. Do not execute anything without the user's decision.`;
   }
 
@@ -216,6 +219,18 @@ export function formatUrgentMeshChatMessage(event: MeshEventRecord): string {
     const capability = asString(event.details?.capability) ?? "unknown capability";
     const requestId = asString(event.details?.requestId);
     const instruction = asString(event.details?.instruction);
+    if (event.details?.direction === "outgoing") {
+      return [
+        "**Capability execution request sent**",
+        "",
+        `Asked peer \`${peer}\` to handle \`${capability}\`.`,
+        requestId ? `Request ID: \`${requestId}\`` : null,
+        instruction ? "" : null,
+        instruction ? `Instruction: ${instruction}` : null,
+        "",
+        "The remote peer must approve before anything runs.",
+      ].filter((line): line is string => line !== null).join("\n");
+    }
     return [
       "**Capability execution requested**",
       "",

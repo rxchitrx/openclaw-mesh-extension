@@ -60,7 +60,7 @@ openclaw gateway restart
 openclaw plugins inspect mesh --runtime
 ```
 
-Expected tools include `mesh_discover`, `mesh_status`, `mesh_broadcast`, `mesh_sync`, `mesh_track`, `mesh_approve`, `mesh_reject`, `mesh_connections`, `mesh_diff`, `mesh_events`, and `mesh_ack`.
+Expected tools include `mesh_discover`, `mesh_status`, `mesh_advertise`, `mesh_capability_request`, `mesh_capability_respond`, `mesh_broadcast`, `mesh_sync`, `mesh_track`, `mesh_approve`, `mesh_reject`, `mesh_connections`, `mesh_diff`, `mesh_events`, and `mesh_ack`.
 
 ## Usage
 
@@ -88,6 +88,9 @@ You: "Pull all from friend-laptop"
 | `mesh_reject` | Reject a pending peer connection | "reject stranger-pc" |
 | `mesh_connections` | Inspect active/pending connections, remote tracking info, apply confirmations, and last peer events | "show mesh connections" |
 | `mesh_diff` | Compare local vs remote files with GitHub-style unified text patches and binary summaries | "show differences with friend-laptop" |
+| `mesh_advertise` | Add, remove, or list capability tags advertised to peers | "advertise can:run-tests" |
+| `mesh_capability_request` | Ask an approved connected peer to handle a capability instruction | "ask friend-laptop to run can:run-tests with npm test" |
+| `mesh_capability_respond` | Send a result or denial for an incoming capability request | "respond to request exec-123 with tests passed" |
 | `mesh_broadcast` | Push local changes to all approved peers | "broadcast" / "broadcast index.ts" |
 | `mesh_sync` | Manifest-based push/pull with a specific peer | "pull README.md from friend-laptop" / "push-all to friend-laptop" |
 | `mesh_events` | List unread and recent mesh events | "show mesh events" |
