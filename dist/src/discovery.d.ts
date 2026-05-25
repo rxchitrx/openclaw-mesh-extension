@@ -20,7 +20,8 @@ export type DiscoveryService = {
     stop: () => Promise<void>;
     scan: () => Promise<void>;
     connectSignaling: (serverUrl: string) => Promise<void>;
-    initiateWebRTCTest: (targetPeerName: string) => Promise<void>;
+    initiateWebRTCConnection: (targetPeerName: string) => Promise<boolean>;
+    onWebRTCConnection: ((peerName: string, transport: any, direction: "incoming" | "outgoing") => void) | null;
     getPeers: () => PeerInfo[];
     getLocalNode: () => {
         name: string;

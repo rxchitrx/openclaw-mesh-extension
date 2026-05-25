@@ -106,6 +106,7 @@ const meshPlugin = {
             },
             urgentNotifyCooldownMs: { type: "number", default: DEFAULT_URGENT_NOTIFICATION_COOLDOWN_MS },
             notificationSessionTtlMs: { type: "number", default: DEFAULT_NOTIFICATION_SESSION_TTL_MS },
+            signalUrl: { type: "string" },
         },
     },
     register(api) {
@@ -115,7 +116,7 @@ const meshPlugin = {
             logger.info("Mesh extension disabled, skipping registration");
             return;
         }
-        const nodeName = config.nodeName || `node-${process.pid}`;
+        const nodeName = process.env.MESH_NODE_NAME || config.nodeName || `node-${process.pid}`;
         const port = config.port || 18790;
         let currentTrackDir = config.trackDir || null;
         let currentSessionKey = null;
@@ -125,6 +126,13 @@ const meshPlugin = {
         const syncState = createSyncState({ nodeName, logger });
         const capabilityRegistry = createCapabilityRegistry(config.capabilities ?? []);
         const transport = createTransport({ nodeName, port, syncState, logger });
+        // Wire up WebRTC signaling to transport
+        transport.setWebRTCDialer(async (peerName) => {
+            return await discovery.initiateWebRTCConnection(peerName);
+        });
+        discovery.onWebRTCConnection = (peerName, webrtcTransport, direction) => {
+            transport.registerExternalTransport(peerName, webrtcTransport, direction, "signaling");
+        };
         const eventStore = createMeshEventStore();
         const sessionTargets = createMeshSessionTargetStore({
             ttlMs: config.notificationSessionTtlMs ?? DEFAULT_NOTIFICATION_SESSION_TTL_MS,
@@ -432,6 +440,11 @@ const meshPlugin = {
             try {
                 logger.info(`Starting mesh services... Node: ${nodeName}, Port: ${port}`);
                 await discovery.start();
+                const targetSignalUrl = config.signalUrl || process.env.SIGNAL_URL;
+                if (targetSignalUrl) {
+                    logger.info(`Connecting to signaling server at ${targetSignalUrl}`);
+                    await discovery.connectSignaling(targetSignalUrl);
+                }
                 await transport.start();
                 if (currentTrackDir) {
                     await startFileWatcher(currentTrackDir);

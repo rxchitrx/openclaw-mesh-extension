@@ -7,6 +7,7 @@ export type MeshConfig = {
     capabilities?: string[];
     urgentNotifyCooldownMs?: number;
     notificationSessionTtlMs?: number;
+    signalUrl?: string;
 };
 declare const meshPlugin: {
     id: string;
@@ -51,6 +52,9 @@ declare const meshPlugin: {
             notificationSessionTtlMs: {
                 type: string;
                 default: number;
+            };
+            signalUrl: {
+                type: string;
             };
         };
     };

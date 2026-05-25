@@ -144,7 +144,14 @@ export function createDiscovery(config) {
     let browser = null;
     let signalingClient = null;
     const testWebRTCTransports = new Map();
+    let onWebRTCConnectionHook = null;
     return {
+        set onWebRTCConnection(hook) {
+            onWebRTCConnectionHook = hook;
+        },
+        get onWebRTCConnection() {
+            return onWebRTCConnectionHook;
+        },
         async start() {
             try {
                 const { getResponder } = await import("@homebridge/ciao");
@@ -195,6 +202,10 @@ export function createDiscovery(config) {
             if (signalingClient) {
                 signalingClient.disconnect();
             }
+            for (const [, t] of testWebRTCTransports) {
+                t.close();
+            }
+            testWebRTCTransports.clear();
             if (browser) {
                 try {
                     browser.stop();
@@ -233,22 +244,43 @@ export function createDiscovery(config) {
                 };
                 signalingClient.onSignalMessage = async (msg) => {
                     if (msg.type === "signal_offer") {
+                        const existingDial = testWebRTCTransports.get(msg.from);
+                        if (existingDial) {
+                            if (nodeName < msg.from) {
+                                logger.warn(`[WEBRTC] Simultaneous dial tiebreaker: ignoring incoming offer from ${msg.from} (we win as initiator)`);
+                                return;
+                            }
+                            else {
+                                logger.warn(`[WEBRTC] Simultaneous dial tiebreaker: aborting our outgoing dial to ${msg.from} (they win as initiator)`);
+                                existingDial.close();
+                                testWebRTCTransports.delete(msg.from);
+                            }
+                        }
                         logger.info(`[SIGNAL] Received offer from ${msg.from}, creating responder transport...`);
                         const transport = new WebRTCTransport(nodeName, msg.from, signalingClient, false, logger);
                         testWebRTCTransports.set(msg.from, transport);
-                        transport.onMessage((raw) => {
-                            try {
-                                const data = JSON.parse(raw);
-                                if (data.type === "webrtc_ping") {
-                                    logger.info(`[WEBRTC] Received ping from ${msg.from}, sending pong...`);
-                                    transport.send(JSON.stringify({ type: "webrtc_pong", timestamp: data.timestamp }));
+                        let isResolved = false;
+                        const timeoutId = setTimeout(() => {
+                            if (!isResolved) {
+                                logger.warn(`[WEBRTC] Responder connection to ${msg.from} timed out after 15s`);
+                                isResolved = true;
+                                transport.close();
+                                testWebRTCTransports.delete(msg.from);
+                            }
+                        }, 15000);
+                        transport.onOpen(() => {
+                            if (!isResolved) {
+                                isResolved = true;
+                                clearTimeout(timeoutId);
+                                testWebRTCTransports.delete(msg.from);
+                                if (onWebRTCConnectionHook) {
+                                    onWebRTCConnectionHook(msg.from, transport, "incoming");
                                 }
-                                else if (data.type === "webrtc_pong") {
-                                    const latency = Date.now() - data.timestamp;
-                                    logger.info(`[WEBRTC] Connectivity test SUCCESS! Roundtrip latency to ${msg.from}: ${latency}ms`);
+                                else {
+                                    logger.warn(`[WEBRTC] Connection established to ${msg.from} but no onWebRTCConnection hook registered`);
+                                    transport.close();
                                 }
                             }
-                            catch (e) { }
                         });
                         await transport.handleOffer(msg.payload);
                     }
@@ -271,27 +303,58 @@ export function createDiscovery(config) {
                 }
             }
         },
-        async initiateWebRTCTest(targetPeerName) {
-            if (!signalingClient)
-                throw new Error("Signaling not connected");
-            logger.info(`[WEBRTC] Initiating test connection to ${targetPeerName}...`);
-            const transport = new WebRTCTransport(nodeName, targetPeerName, signalingClient, true, logger);
-            testWebRTCTransports.set(targetPeerName, transport);
-            transport.onMessage((raw) => {
+        async initiateWebRTCConnection(targetPeerName) {
+            if (!signalingClient) {
+                logger.warn("Cannot initiate WebRTC connection: signaling not connected");
+                return false;
+            }
+            logger.info(`[WEBRTC] Initiating connection to ${targetPeerName}...`);
+            return new Promise(async (resolve) => {
+                let isResolved = false;
+                const transport = new WebRTCTransport(nodeName, targetPeerName, signalingClient, true, logger);
+                testWebRTCTransports.set(targetPeerName, transport);
+                const cleanup = () => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        testWebRTCTransports.delete(targetPeerName);
+                        transport.close();
+                        resolve(false);
+                    }
+                };
+                const timeoutId = setTimeout(() => {
+                    logger.warn(`[WEBRTC] Connection to ${targetPeerName} timed out after 15s`);
+                    cleanup();
+                }, 15000);
+                transport.onOpen(() => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        clearTimeout(timeoutId);
+                        testWebRTCTransports.delete(targetPeerName);
+                        if (onWebRTCConnectionHook) {
+                            onWebRTCConnectionHook(targetPeerName, transport, "outgoing");
+                            resolve(true);
+                        }
+                        else {
+                            logger.warn(`[WEBRTC] Connection established to ${targetPeerName} but no hook registered`);
+                            transport.close();
+                            resolve(false);
+                        }
+                    }
+                });
+                transport.onDisconnect(() => {
+                    if (!isResolved) {
+                        logger.warn(`[WEBRTC] Connection to ${targetPeerName} disconnected during handshake`);
+                        cleanup();
+                    }
+                });
                 try {
-                    const data = JSON.parse(raw);
-                    if (data.type === "webrtc_ping") {
-                        logger.info(`[WEBRTC] Received ping from ${targetPeerName}, sending pong...`);
-                        transport.send(JSON.stringify({ type: "webrtc_pong", timestamp: data.timestamp }));
-                    }
-                    else if (data.type === "webrtc_pong") {
-                        const latency = Date.now() - data.timestamp;
-                        logger.info(`[WEBRTC] Connectivity test SUCCESS! Roundtrip latency to ${targetPeerName}: ${latency}ms`);
-                    }
+                    await transport.initiate();
                 }
-                catch (e) { }
+                catch (err) {
+                    logger.error(`[WEBRTC] Failed to initiate connection to ${targetPeerName}: ${err}`);
+                    cleanup();
+                }
             });
-            await transport.initiate();
         },
         async scan() {
             if (browser) {

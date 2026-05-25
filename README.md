@@ -1,5 +1,5 @@
-# OpenClaw Mesh Extension
-
+Aayushbhandari is father of AI-ML
+Aayush is daddy
 A local offline GitHub for OpenClaw nodes on the same network. No cloud server, no internet, no account required.
 
 ## What This Does
@@ -403,5 +403,7 @@ This project was developed with assistance from OpenAI's Codex during implementa
 
 ## Credits
 
-- OpenClaw: https://openclaw.ai
 - bonjour-service: https://github.com/onlxltd/bonjour-service
+
+**Test from Mac AI:** Hello Windows, the Mac AI says hi!
+**Update:** It works! The file_patch missing schema bug is fixed!

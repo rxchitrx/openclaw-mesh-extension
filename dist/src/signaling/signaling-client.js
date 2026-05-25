@@ -2,6 +2,10 @@ export class SignalingClient {
     ws = null;
     logger;
     localNodeName;
+    serverUrl = "";
+    isIntentionalDisconnect = false;
+    reconnectAttempts = 0;
+    reconnectTimer = null;
     onPeerJoin;
     onPeerLeave;
     onSignalMessage;
@@ -10,11 +14,17 @@ export class SignalingClient {
         this.logger = logger;
     }
     async connect(serverUrl) {
+        this.serverUrl = serverUrl;
+        this.isIntentionalDisconnect = false;
+        return this.doConnect();
+    }
+    async doConnect() {
         const wsModule = await import("ws");
         return new Promise((resolve, reject) => {
-            this.ws = new wsModule.default(serverUrl);
+            this.ws = new wsModule.default(this.serverUrl);
             this.ws.on("open", () => {
-                this.logger.info(`[SIGNAL] Connected to signaling server at ${serverUrl}`);
+                this.logger.info(`[SIGNAL] Connected to signaling server at ${this.serverUrl}`);
+                this.reconnectAttempts = 0;
                 this.send({ type: "register", from: this.localNodeName });
                 resolve();
             });
@@ -45,12 +55,27 @@ export class SignalingClient {
             });
             this.ws.on("error", (err) => {
                 this.logger.error(`[SIGNAL] Connection error: ${err}`);
-                reject(err);
+                if (this.reconnectAttempts === 0)
+                    reject(err);
             });
             this.ws.on("close", () => {
                 this.logger.info(`[SIGNAL] Disconnected from signaling server.`);
+                this.ws = null;
+                this.scheduleReconnect();
             });
         });
+    }
+    scheduleReconnect() {
+        if (this.isIntentionalDisconnect)
+            return;
+        if (this.reconnectTimer)
+            clearTimeout(this.reconnectTimer);
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.reconnectAttempts++;
+        this.logger.info(`[SIGNAL] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+        this.reconnectTimer = setTimeout(() => {
+            this.doConnect().catch(() => { });
+        }, delay);
     }
     send(msg) {
         if (this.ws && this.ws.readyState === 1) {
@@ -61,6 +86,11 @@ export class SignalingClient {
         }
     }
     disconnect() {
+        this.isIntentionalDisconnect = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         if (this.ws) {
             this.ws.close();
             this.ws = null;

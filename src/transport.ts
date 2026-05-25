@@ -61,6 +61,8 @@ export type Connection = {
   fingerprint?: string;
   publicKey?: string;
   identityVerified?: boolean;
+  transportType: "lan" | "webrtc";
+  source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping";
 };
 
 export type PendingConnection = {
@@ -73,6 +75,8 @@ export type PendingConnection = {
   publicKey?: string;
   identityVerified?: boolean;
   fingerprintMismatch?: boolean;
+  transportType: "lan" | "webrtc";
+  source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping";
 };
 
 export type NodeInfo = {
@@ -157,6 +161,8 @@ export type TransportService = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   connectToPeer: (peer: PeerInfo) => Promise<boolean>;
+  registerExternalTransport: (peerName: string, transport: PeerTransport, direction: "incoming" | "outgoing", source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping", host?: string) => void;
+  setWebRTCDialer: (dialer: (peerName: string) => Promise<boolean>) => void;
   broadcast: (message: any) => void;
   sendToPeer: (peerName: string, message: any) => void;
   getConnections: () => string[];
@@ -217,6 +223,7 @@ export function createTransport(config: TransportConfig): TransportService {
   let fileWriter: ((relativePath: string, contentOrTempPath: string, isBinary: boolean, isTempFile?: boolean) => Promise<void>) | null = null;
   let ignoreNextChangeFn: ((relativePath: string) => void) | null = null;
   let server: any = null;
+  let webRTCDialer: ((peerName: string) => Promise<boolean>) | null = null;
   
   const tmpDir = path.join(os.tmpdir(), "openclaw-mesh", nodeName);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -440,6 +447,8 @@ export function createTransport(config: TransportConfig): TransportService {
       fingerprint: pending.fingerprint,
       publicKey: pending.publicKey,
       identityVerified: pending.identityVerified,
+      transportType: pending.transportType,
+      source: pending.source,
     };
     connections.set(peerName, conn);
     pendingConnections.delete(peerName);
@@ -1243,11 +1252,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
   const sendToPeer = (peerName: string, message: any) => {
     const conn = connections.get(peerName);
+    const pending = pendingConnections.get(peerName);
+    
     if (conn && conn.transport.isOpen()) {
       conn.transport.send(JSON.stringify(message));
-    }
-    const pending = pendingConnections.get(peerName);
-    if (pending && pending.transport.isOpen()) {
+    } else if (pending && pending.transport.isOpen()) {
       pending.transport.send(JSON.stringify(message));
     }
   };
@@ -1282,6 +1291,13 @@ export function createTransport(config: TransportConfig): TransportService {
 
     transport.onDisconnect(() => {
       pendingConnections.delete(peerName);
+      challengeNonces.delete(peerName);
+      remoteManifests.delete(peerName);
+      remoteNodeInfo.delete(peerName);
+      remoteAppliedFiles.delete(peerName);
+      remoteRejectedFiles.delete(peerName);
+      peerTrustWarnings.delete(peerName);
+
       if (connections.has(peerName)) {
         connections.delete(peerName);
         notify({
@@ -1337,6 +1353,8 @@ export function createTransport(config: TransportConfig): TransportService {
             fingerprint: typeof req.headers["x-mesh-fingerprint"] === "string" ? req.headers["x-mesh-fingerprint"] : undefined,
             publicKey: decodePublicKeyFromWire(req.headers["x-mesh-public-key"]) || undefined,
             identityVerified: false,
+            transportType: "lan",
+            source: "transport",
           };
           pendingConnections.set(peerName, pending);
           setupTransport(transport, peerName, true);
@@ -1415,6 +1433,16 @@ export function createTransport(config: TransportConfig): TransportService {
       if (connections.has(peer.name)) return true;
       if (pendingConnections.has(peer.name)) return true;
 
+      if (peer.source === "signaling" || peer.host === "remote") {
+        if (webRTCDialer) {
+          logger.info(`[WEBRTC] Delegating dial for signaling peer: ${peer.name}`);
+          return await webRTCDialer(peer.name);
+        } else {
+          logger.warn(`Cannot dial signaling peer ${peer.name}: no webRTCDialer registered`);
+          return false;
+        }
+      }
+
       try {
         const wsModule = await import("ws");
         const ws = new wsModule.default(`ws://${normalizedHost}:${peer.port}`, {
@@ -1435,6 +1463,8 @@ export function createTransport(config: TransportConfig): TransportService {
               connectedAt: Date.now(),
               direction: "outgoing",
               identityVerified: false,
+              transportType: "lan",
+              source: peer.source || "mdns",
             };
             pendingConnections.set(peer.name, pending);
             setupTransport(transport, peer.name, false);
@@ -1455,6 +1485,49 @@ export function createTransport(config: TransportConfig): TransportService {
         logger.error(`Connection to ${peer.name} failed: ${err}`);
         return false;
       }
+    },
+
+    registerExternalTransport(peerName: string, transport: PeerTransport, direction: "incoming" | "outgoing", source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping", host = "remote") {
+      if (connections.has(peerName)) {
+        logger.warn(`Rejecting duplicate external transport for ${peerName}`);
+        transport.close();
+        return;
+      }
+      
+      const existingPending = pendingConnections.get(peerName);
+      if (existingPending) {
+        // If we already have an outgoing WebRTC request and this is incoming, or vice versa, the protocol naturally prevents dual connections later,
+        // but it's safer to close the incoming one if we are already pending an outgoing one, to prevent crossed wires.
+        // For now, if we have a pending connection, we keep it and reject the new one to prevent dual transports.
+        logger.warn(`Peer ${peerName} already pending, rejecting new external transport.`);
+        transport.close();
+        return;
+      }
+
+      const pending: PendingConnection = {
+        peerName,
+        transport,
+        host,
+        connectedAt: Date.now(),
+        direction,
+        identityVerified: false,
+        transportType: transport.type as "lan" | "webrtc",
+        source,
+      };
+
+      pendingConnections.set(peerName, pending);
+      setupTransport(transport, peerName, direction === "incoming");
+
+      sendIdentityChallenge(peerName, transport);
+      if (direction === "outgoing") {
+        logger.info(`[${transport.type.toUpperCase()}] Connected to external peer (awaiting identity proof): ${peerName}`);
+      } else {
+        logger.info(`[${transport.type.toUpperCase()}] Accepted external peer connection (awaiting identity proof): ${peerName}`);
+      }
+    },
+
+    setWebRTCDialer(dialer: (peerName: string) => Promise<boolean>) {
+      webRTCDialer = dialer;
     },
 
     broadcast(message: any) {
@@ -1577,9 +1650,9 @@ export function createTransport(config: TransportConfig): TransportService {
             const { createPatchPayload } = await import("./diff-engine.js");
             const patchPayload = createPatchPayload(safeRelativePath, oldContent, content, lastSentHash, localHash);
             if (patchPayload && patchPayload.patch) {
-              this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
-              logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
-              patchSent = true;
+              // DISABLED: this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
+              // logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
+              // patchSent = true;
             }
           } else {
             logger.info(`No shadow found for ${safeRelativePath} → ${peerName}; will send full file and cache shadow for future diffs`);

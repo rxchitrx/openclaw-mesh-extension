@@ -35,6 +35,7 @@ export function createTransport(config) {
     let fileWriter = null;
     let ignoreNextChangeFn = null;
     let server = null;
+    let webRTCDialer = null;
     const tmpDir = path.join(os.tmpdir(), "openclaw-mesh", nodeName);
     fs.mkdirSync(tmpDir, { recursive: true });
     let notificationHandler = null;
@@ -233,6 +234,8 @@ export function createTransport(config) {
             fingerprint: pending.fingerprint,
             publicKey: pending.publicKey,
             identityVerified: pending.identityVerified,
+            transportType: pending.transportType,
+            source: pending.source,
         };
         connections.set(peerName, conn);
         pendingConnections.delete(peerName);
@@ -1012,11 +1015,11 @@ export function createTransport(config) {
     };
     const sendToPeer = (peerName, message) => {
         const conn = connections.get(peerName);
+        const pending = pendingConnections.get(peerName);
         if (conn && conn.transport.isOpen()) {
             conn.transport.send(JSON.stringify(message));
         }
-        const pending = pendingConnections.get(peerName);
-        if (pending && pending.transport.isOpen()) {
+        else if (pending && pending.transport.isOpen()) {
             pending.transport.send(JSON.stringify(message));
         }
     };
@@ -1051,6 +1054,12 @@ export function createTransport(config) {
         });
         transport.onDisconnect(() => {
             pendingConnections.delete(peerName);
+            challengeNonces.delete(peerName);
+            remoteManifests.delete(peerName);
+            remoteNodeInfo.delete(peerName);
+            remoteAppliedFiles.delete(peerName);
+            remoteRejectedFiles.delete(peerName);
+            peerTrustWarnings.delete(peerName);
             if (connections.has(peerName)) {
                 connections.delete(peerName);
                 notify({
@@ -1097,6 +1106,8 @@ export function createTransport(config) {
                         fingerprint: typeof req.headers["x-mesh-fingerprint"] === "string" ? req.headers["x-mesh-fingerprint"] : undefined,
                         publicKey: decodePublicKeyFromWire(req.headers["x-mesh-public-key"]) || undefined,
                         identityVerified: false,
+                        transportType: "lan",
+                        source: "transport",
                     };
                     pendingConnections.set(peerName, pending);
                     setupTransport(transport, peerName, true);
@@ -1169,6 +1180,16 @@ export function createTransport(config) {
                 return true;
             if (pendingConnections.has(peer.name))
                 return true;
+            if (peer.source === "signaling" || peer.host === "remote") {
+                if (webRTCDialer) {
+                    logger.info(`[WEBRTC] Delegating dial for signaling peer: ${peer.name}`);
+                    return await webRTCDialer(peer.name);
+                }
+                else {
+                    logger.warn(`Cannot dial signaling peer ${peer.name}: no webRTCDialer registered`);
+                    return false;
+                }
+            }
             try {
                 const wsModule = await import("ws");
                 const ws = new wsModule.default(`ws://${normalizedHost}:${peer.port}`, {
@@ -1188,6 +1209,8 @@ export function createTransport(config) {
                             connectedAt: Date.now(),
                             direction: "outgoing",
                             identityVerified: false,
+                            transportType: "lan",
+                            source: peer.source || "mdns",
                         };
                         pendingConnections.set(peer.name, pending);
                         setupTransport(transport, peer.name, false);
@@ -1206,6 +1229,44 @@ export function createTransport(config) {
                 logger.error(`Connection to ${peer.name} failed: ${err}`);
                 return false;
             }
+        },
+        registerExternalTransport(peerName, transport, direction, source, host = "remote") {
+            if (connections.has(peerName)) {
+                logger.warn(`Rejecting duplicate external transport for ${peerName}`);
+                transport.close();
+                return;
+            }
+            const existingPending = pendingConnections.get(peerName);
+            if (existingPending) {
+                // If we already have an outgoing WebRTC request and this is incoming, or vice versa, the protocol naturally prevents dual connections later,
+                // but it's safer to close the incoming one if we are already pending an outgoing one, to prevent crossed wires.
+                // For now, if we have a pending connection, we keep it and reject the new one to prevent dual transports.
+                logger.warn(`Peer ${peerName} already pending, rejecting new external transport.`);
+                transport.close();
+                return;
+            }
+            const pending = {
+                peerName,
+                transport,
+                host,
+                connectedAt: Date.now(),
+                direction,
+                identityVerified: false,
+                transportType: transport.type,
+                source,
+            };
+            pendingConnections.set(peerName, pending);
+            setupTransport(transport, peerName, direction === "incoming");
+            sendIdentityChallenge(peerName, transport);
+            if (direction === "outgoing") {
+                logger.info(`[${transport.type.toUpperCase()}] Connected to external peer (awaiting identity proof): ${peerName}`);
+            }
+            else {
+                logger.info(`[${transport.type.toUpperCase()}] Accepted external peer connection (awaiting identity proof): ${peerName}`);
+            }
+        },
+        setWebRTCDialer(dialer) {
+            webRTCDialer = dialer;
         },
         broadcast(message) {
             const data = JSON.stringify(message);
@@ -1309,9 +1370,9 @@ export function createTransport(config) {
                         const { createPatchPayload } = await import("./diff-engine.js");
                         const patchPayload = createPatchPayload(safeRelativePath, oldContent, content, lastSentHash, localHash);
                         if (patchPayload && patchPayload.patch) {
-                            this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
-                            logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
-                            patchSent = true;
+                            // DISABLED: this.sendFilePatch(peerName, safeRelativePath, patchPayload.patch, patchPayload.parentHash, patchPayload.targetHash);
+                            // logger.info(`Generated patch for ${safeRelativePath} → ${peerName}. Patch size: ${Buffer.byteLength(patchPayload.patch, "utf-8")} bytes (shadow-based, no round-trip)`);
+                            // patchSent = true;
                         }
                     }
                     else {

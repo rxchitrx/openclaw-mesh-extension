@@ -9,6 +9,7 @@ export class WebRTCTransport {
     isInitiator;
     logger;
     // Handlers for PeerTransport interface
+    openHandler;
     messageHandler;
     disconnectHandler;
     errorHandler;
@@ -52,8 +53,8 @@ export class WebRTCTransport {
         channel.stateChanged.subscribe((state) => {
             if (state === "open") {
                 this.logger.info(`[WEBRTC] DataChannel open to ${this.remotePeerName}`);
-                this.logger.info(`[WEBRTC] Executing ping/pong latency test...`);
-                this.send(JSON.stringify({ type: "webrtc_ping", timestamp: Date.now() }));
+                if (this.openHandler)
+                    this.openHandler();
             }
             else if (state === "closed") {
                 this.close();
@@ -96,15 +97,19 @@ export class WebRTCTransport {
         // werift doesn't use trickle ICE via addIceCandidate, so we ignore these.
     }
     // PeerTransport Implementation
+    isClosed = false;
     send(message) {
         if (this.isOpen() && this.dc) {
             this.dc.send(Buffer.from(message));
         }
     }
     isOpen() {
-        return this.dc?.readyState === "open";
+        return this.dc?.readyState === "open" && !this.isClosed;
     }
     close() {
+        if (this.isClosed)
+            return;
+        this.isClosed = true;
         if (this.dc) {
             try {
                 this.dc.close();
@@ -119,8 +124,11 @@ export class WebRTCTransport {
         }
         if (this.disconnectHandler) {
             this.disconnectHandler();
-            this.disconnectHandler = undefined; // Prevent duplicate calls
+            this.disconnectHandler = undefined;
         }
+    }
+    onOpen(handler) {
+        this.openHandler = handler;
     }
     onMessage(handler) {
         this.messageHandler = handler;

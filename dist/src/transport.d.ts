@@ -17,6 +17,8 @@ export type Connection = {
     fingerprint?: string;
     publicKey?: string;
     identityVerified?: boolean;
+    transportType: "lan" | "webrtc";
+    source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping";
 };
 export type PendingConnection = {
     peerName: string;
@@ -28,6 +30,8 @@ export type PendingConnection = {
     publicKey?: string;
     identityVerified?: boolean;
     fingerprintMismatch?: boolean;
+    transportType: "lan" | "webrtc";
+    source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping";
 };
 export type NodeInfo = {
     nodeName: string;
@@ -82,6 +86,8 @@ export type TransportService = {
     start: () => Promise<void>;
     stop: () => Promise<void>;
     connectToPeer: (peer: PeerInfo) => Promise<boolean>;
+    registerExternalTransport: (peerName: string, transport: PeerTransport, direction: "incoming" | "outgoing", source: "mdns" | "signaling" | "transport" | "subnet-scan" | "ping", host?: string) => void;
+    setWebRTCDialer: (dialer: (peerName: string) => Promise<boolean>) => void;
     broadcast: (message: any) => void;
     sendToPeer: (peerName: string, message: any) => void;
     getConnections: () => string[];

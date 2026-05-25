@@ -14,6 +14,7 @@ export class WebRTCTransport implements PeerTransport {
   private logger: any;
 
   // Handlers for PeerTransport interface
+  private openHandler?: () => void;
   private messageHandler?: (data: string) => void;
   private disconnectHandler?: () => void;
   private errorHandler?: (err: Error) => void;
@@ -69,8 +70,7 @@ export class WebRTCTransport implements PeerTransport {
     channel.stateChanged.subscribe((state) => {
       if (state === "open") {
         this.logger.info(`[WEBRTC] DataChannel open to ${this.remotePeerName}`);
-        this.logger.info(`[WEBRTC] Executing ping/pong latency test...`);
-        this.send(JSON.stringify({ type: "webrtc_ping", timestamp: Date.now() }));
+        if (this.openHandler) this.openHandler();
       } else if (state === "closed") {
         this.close();
       }
@@ -123,6 +123,8 @@ export class WebRTCTransport implements PeerTransport {
 
   // PeerTransport Implementation
 
+  private isClosed = false;
+
   send(message: string): void {
     if (this.isOpen() && this.dc) {
       this.dc.send(Buffer.from(message));
@@ -130,10 +132,13 @@ export class WebRTCTransport implements PeerTransport {
   }
 
   isOpen(): boolean {
-    return this.dc?.readyState === "open";
+    return this.dc?.readyState === "open" && !this.isClosed;
   }
 
   close(): void {
+    if (this.isClosed) return;
+    this.isClosed = true;
+
     if (this.dc) {
       try { this.dc.close(); } catch {}
     }
@@ -142,8 +147,12 @@ export class WebRTCTransport implements PeerTransport {
     }
     if (this.disconnectHandler) {
       this.disconnectHandler();
-      this.disconnectHandler = undefined; // Prevent duplicate calls
+      this.disconnectHandler = undefined;
     }
+  }
+
+  onOpen(handler: () => void): void {
+    this.openHandler = handler;
   }
 
   onMessage(handler: (data: string) => void): void {

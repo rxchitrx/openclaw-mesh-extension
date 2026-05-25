@@ -9,6 +9,7 @@ export declare class WebRTCTransport implements PeerTransport {
     private remotePeerName;
     private isInitiator;
     private logger;
+    private openHandler?;
     private messageHandler?;
     private disconnectHandler?;
     private errorHandler?;
@@ -19,9 +20,11 @@ export declare class WebRTCTransport implements PeerTransport {
     handleOffer(offer: any): Promise<void>;
     handleAnswer(answer: any): Promise<void>;
     handleIceCandidate(candidate: any): Promise<void>;
+    private isClosed;
     send(message: string): void;
     isOpen(): boolean;
     close(): void;
+    onOpen(handler: () => void): void;
     onMessage(handler: (data: string) => void): void;
     onDisconnect(handler: () => void): void;
     onError(handler: (err: Error) => void): void;

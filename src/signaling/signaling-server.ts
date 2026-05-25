@@ -8,7 +8,7 @@ export class SignalingServer {
 
   constructor(port: number, logger: any) {
     this.logger = logger;
-    this.wss = new WebSocketServer({ port });
+    this.wss = new WebSocketServer({ port, maxPayload: 65536 });
 
     this.wss.on("connection", (ws: WebSocket) => {
       let registeredPeerName: string | null = null;
@@ -19,6 +19,13 @@ export class SignalingServer {
 
           switch (msg.type) {
             case "register":
+              if (this.peers.has(msg.from)) {
+                const existingWs = this.peers.get(msg.from)!;
+                if (existingWs.readyState === WebSocket.OPEN && existingWs !== ws) {
+                  this.logger.warn(`[SIGNAL][WARN] Duplicate registration rejected for ${msg.from}`);
+                  return;
+                }
+              }
               registeredPeerName = msg.from;
               this.peers.set(registeredPeerName, ws);
               this.logger.info(`[SIGNAL] Peer joined: ${registeredPeerName}`);
@@ -31,17 +38,14 @@ export class SignalingServer {
               break;
 
             case "signal_offer":
-              this.logger.info(`[SIGNAL] Relaying offer from ${msg.from} to ${msg.target}`);
-              this.relay(msg);
-              break;
-
             case "signal_answer":
-              this.logger.info(`[SIGNAL] Relaying answer from ${msg.from} to ${msg.target}`);
-              this.relay(msg);
-              break;
-
             case "ice_candidate":
-              this.logger.info(`[SIGNAL] Relaying ICE candidate from ${msg.from} to ${msg.target}`);
+              if (!registeredPeerName || msg.from !== registeredPeerName) {
+                this.logger.warn(`[SIGNAL] Rejected message with spoofed 'from' field: expected ${registeredPeerName}, got ${msg.from}`);
+                return;
+              }
+              msg.from = registeredPeerName;
+              this.logger.info(`[SIGNAL] Relaying ${msg.type} from ${msg.from} to ${msg.target}`);
               this.relay(msg);
               break;
           }
