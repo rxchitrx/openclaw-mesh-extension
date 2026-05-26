@@ -40,6 +40,8 @@ export function createTransport(config) {
     let notificationHandler = null;
     let keepaliveTimer = null;
     const PING_INTERVAL_MS = 30000;
+    const SOCKET_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+    const CHUNK_SEND_PAUSE_MS = 10;
     const syncStats = {
         patchSyncs: 0,
         fallbackFullSyncs: 0,
@@ -55,6 +57,38 @@ export function createTransport(config) {
     const computeMeshContentHash = (content, isBinary) => {
         const hashInput = Buffer.isBuffer(content) && isBinary ? content.toString("base64") : content;
         return crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 16);
+    };
+    const computeFileHash = async (filePath, isBinary) => {
+        const hash = crypto.createHash("sha256");
+        if (!isBinary) {
+            await new Promise((resolve, reject) => {
+                fs.createReadStream(filePath)
+                    .on("data", (chunk) => hash.update(chunk))
+                    .on("end", resolve)
+                    .on("error", reject);
+            });
+            return hash.digest("hex").slice(0, 16);
+        }
+        let carry = Buffer.alloc(0);
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(filePath)
+                .on("data", (chunk) => {
+                const input = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+                const completeLength = input.length - (input.length % 3);
+                if (completeLength > 0) {
+                    hash.update(input.subarray(0, completeLength).toString("base64"));
+                }
+                carry = input.subarray(completeLength);
+            })
+                .on("end", () => {
+                if (carry.length > 0) {
+                    hash.update(carry.toString("base64"));
+                }
+                resolve();
+            })
+                .on("error", reject);
+        });
+        return hash.digest("hex").slice(0, 16);
     };
     const notifyInvalidMessage = (peerName, reason, filePath) => {
         notify({
@@ -82,6 +116,24 @@ export function createTransport(config) {
             data: { file: filePath, reason, hash, ...details },
         });
     };
+    const waitForSocketBackpressure = async (socket) => {
+        while (socket.readyState === 1 && socket.bufferedAmount > SOCKET_BACKPRESSURE_BYTES) {
+            await new Promise((resolve) => setTimeout(resolve, CHUNK_SEND_PAUSE_MS));
+        }
+    };
+    const sendChunkToPeer = async (peerName, message) => {
+        const conn = connections.get(peerName);
+        if (!conn?.approved || conn.socket.readyState !== 1) {
+            return false;
+        }
+        await waitForSocketBackpressure(conn.socket);
+        if (conn.socket.readyState !== 1) {
+            return false;
+        }
+        conn.socket.send(JSON.stringify(message));
+        await waitForSocketBackpressure(conn.socket);
+        return conn.socket.readyState === 1;
+    };
     const clearPeerTransientState = (peerName) => {
         remoteNodeInfo.delete(peerName);
         remoteManifests.delete(peerName);
@@ -90,8 +142,10 @@ export function createTransport(config) {
                 autoRequestedCapabilities.delete(key);
         }
         for (const [key, assembly] of chunkAssemblies) {
-            if (assembly.peerName === peerName)
+            if (assembly.peerName === peerName) {
+                fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
                 chunkAssemblies.delete(key);
+            }
         }
     };
     const publicPendingExecution = (execution) => ({
@@ -527,6 +581,8 @@ export function createTransport(config) {
                                 rejectChunkAssembly(peerName, filePath, "missing_initial_chunk", remoteHash, { transferId: finalTransferId, chunkIndex, totalChunks });
                                 break;
                             }
+                            const tmpFilePath = path.join(tmpDir, `${Buffer.from(key).toString("hex")}.tmp`);
+                            await fs.promises.rm(tmpFilePath, { force: true }).catch(() => { });
                             assembly = {
                                 peerName,
                                 path: filePath,
@@ -534,7 +590,8 @@ export function createTransport(config) {
                                 totalChunks,
                                 isBinary,
                                 hash: remoteHash,
-                                chunks: new Map(),
+                                tmpFilePath,
+                                nextChunkIndex: 0,
                                 startedAt: Date.now(),
                             };
                             chunkAssemblies.set(key, assembly);
@@ -544,44 +601,42 @@ export function createTransport(config) {
                             rejectChunkAssembly(peerName, filePath, "chunk_metadata_mismatch", remoteHash, { transferId: finalTransferId });
                             break;
                         }
-                        if (assembly.chunks.has(chunkIndex)) {
+                        if (chunkIndex !== assembly.nextChunkIndex) {
                             chunkAssemblies.delete(key);
-                            rejectChunkAssembly(peerName, filePath, "duplicate_chunk", remoteHash, { transferId: finalTransferId, chunkIndex });
+                            await fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
+                            const reason = chunkIndex < assembly.nextChunkIndex ? "duplicate_chunk" : "missing_chunk";
+                            rejectChunkAssembly(peerName, filePath, reason, remoteHash, { transferId: finalTransferId, expectedChunkIndex: assembly.nextChunkIndex, actualChunkIndex: chunkIndex });
                             break;
                         }
-                        assembly.chunks.set(chunkIndex, chunk);
-                        notify({
-                            type: "file_chunk",
-                            message: `Received chunk ${chunkIndex + 1}/${totalChunks} for '${filePath}' from '${peerName}'.`,
-                            peerName,
-                            filePath,
-                            data: { file: filePath, transferId: finalTransferId, chunkIndex, totalChunks, hash: remoteHash },
-                        });
-                        if (assembly.chunks.size !== totalChunks) {
+                        if (isBinary) {
+                            await fs.promises.appendFile(assembly.tmpFilePath, Buffer.from(chunk, "base64"));
+                        }
+                        else {
+                            await fs.promises.appendFile(assembly.tmpFilePath, chunk, "utf-8");
+                        }
+                        assembly.nextChunkIndex++;
+                        if (chunkIndex === 0 || chunkIndex === totalChunks - 1 || (chunkIndex + 1) % 50 === 0) {
+                            notify({
+                                type: "file_chunk",
+                                message: `Received chunk ${chunkIndex + 1}/${totalChunks} for '${filePath}' from '${peerName}'.`,
+                                peerName,
+                                filePath,
+                                data: { file: filePath, transferId: finalTransferId, chunkIndex, totalChunks, hash: remoteHash },
+                            });
+                        }
+                        if (assembly.nextChunkIndex !== totalChunks) {
                             break;
                         }
-                        const missing = [];
-                        for (let i = 0; i < totalChunks; i++) {
-                            if (!assembly.chunks.has(i))
-                                missing.push(i);
-                        }
-                        if (missing.length > 0) {
-                            chunkAssemblies.delete(key);
-                            rejectChunkAssembly(peerName, filePath, "missing_chunk", remoteHash, { transferId: finalTransferId, missingChunks: missing });
-                            break;
-                        }
-                        const ordered = Array.from({ length: totalChunks }, (_, index) => assembly.chunks.get(index));
-                        const assembled = isBinary
-                            ? Buffer.concat(ordered.map((item) => Buffer.from(item, "base64")))
-                            : ordered.join("");
-                        const assembledHash = computeMeshContentHash(assembled, isBinary);
+                        const assembledHash = await computeFileHash(assembly.tmpFilePath, isBinary);
                         if (remoteHash && assembledHash !== remoteHash) {
                             chunkAssemblies.delete(key);
+                            await fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
                             rejectChunkAssembly(peerName, filePath, "hash_mismatch", remoteHash, { transferId: finalTransferId, expectedHash: remoteHash, actualHash: assembledHash });
                             break;
                         }
                         if (syncState.isConflict(filePath, remoteHash || "") && !syncState.consumeForceAllow(filePath)) {
                             chunkAssemblies.delete(key);
+                            await fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
                             logger.warn(`Conflict: ${filePath} — local has modifications and remote has different version. Keeping local.`);
                             sendFileRejected(peerName, filePath, "conflict", remoteHash);
                             notify({
@@ -597,15 +652,7 @@ export function createTransport(config) {
                             try {
                                 if (ignoreNextChangeFn)
                                     ignoreNextChangeFn(filePath);
-                                const tmpFilePath = path.join(tmpDir, `${Buffer.from(key).toString("hex")}.tmp`);
-                                if (isBinary) {
-                                    await fs.promises.writeFile(tmpFilePath, assembled);
-                                }
-                                else {
-                                    await fs.promises.writeFile(tmpFilePath, assembled, "utf-8");
-                                }
-                                await fileWriter(filePath, tmpFilePath, isBinary, true);
-                                await fs.promises.rm(tmpFilePath, { force: true }).catch(() => { });
+                                await fileWriter(filePath, assembly.tmpFilePath, isBinary, true);
                                 syncState.recordRemoteChange(filePath, remoteHash || assembledHash, peerName, isBinary);
                                 sendToPeer(peerName, {
                                     type: "file_applied",
@@ -626,7 +673,11 @@ export function createTransport(config) {
                                 logger.error(`Failed to assemble/write chunked file ${filePath}: ${err}`);
                                 const reason = err instanceof Error && err.message === "no_track_directory" ? "no_tracked_directory" : "chunk_assembly_failed";
                                 rejectChunkAssembly(peerName, filePath, reason, remoteHash, { transferId: finalTransferId, error: String(err) });
+                                await fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
                             }
+                        }
+                        else {
+                            await fs.promises.rm(assembly.tmpFilePath, { force: true }).catch(() => { });
                         }
                         chunkAssemblies.delete(key);
                     }
@@ -1475,7 +1526,7 @@ export function createTransport(config) {
                 const transferId = createTransferId();
                 for (let i = 0; i < totalChunks; i++) {
                     const chunk = content.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-                    sendToPeer(peerName, {
+                    const sent = await sendChunkToPeer(peerName, {
                         type: "file_chunk",
                         path: safeRelativePath,
                         transferId,
@@ -1486,8 +1537,18 @@ export function createTransport(config) {
                         hash: localHash,
                         from: nodeName,
                     });
-                    // Yield to event loop to prevent freezing on huge files
-                    await new Promise(resolve => setTimeout(resolve, 0));
+                    if (!sent) {
+                        inFlightSends.delete(`${peerName}:${safeRelativePath}`);
+                        notify({
+                            type: "sync_failed",
+                            message: `Stopped sending '${safeRelativePath}' to '${peerName}' because the peer disconnected during chunk ${i + 1}/${totalChunks}.`,
+                            peerName,
+                            filePath: safeRelativePath,
+                            data: { file: safeRelativePath, reason: "peer_disconnected_during_chunk_send", mode: "chunked", transferId, chunkIndex: i, totalChunks },
+                        });
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, CHUNK_SEND_PAUSE_MS));
                 }
                 // After the first full send, save a shadow so the NEXT change to this
                 // file can be sent as a patch instead of another full file.
