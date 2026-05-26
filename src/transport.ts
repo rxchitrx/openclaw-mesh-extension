@@ -216,6 +216,7 @@ export function createTransport(config: TransportConfig): TransportService {
     startedAt: number;
   }>();
   const autoRequestedCapabilities = new Set<string>();
+  const peerMessageQueues = new Map<string, Promise<void>>();
   const peerTrustWarnings = new Map<string, string>();
   const challengeNonces = new Map<string, string>();
   const previewRequests = new Map<string, {
@@ -1423,6 +1424,19 @@ export function createTransport(config: TransportConfig): TransportService {
   };
 
   const setupSocket = (socket: any, peerName: string, isIncoming: boolean) => {
+    const enqueueMessage = (raw: string, approved: boolean) => {
+      const previous = peerMessageQueues.get(peerName) ?? Promise.resolve();
+      const next = previous
+        .catch(() => {})
+        .then(() => handleMessage(peerName, raw, approved));
+      peerMessageQueues.set(peerName, next);
+      void next.finally(() => {
+        if (peerMessageQueues.get(peerName) === next) {
+          peerMessageQueues.delete(peerName);
+        }
+      });
+    };
+
     socket.on("message", (data: Buffer) => {
       if (isRawMessageTooLarge(data.length)) {
         logger.warn(`Rejected oversized raw message from ${peerName}: ${data.length} bytes`);
@@ -1442,11 +1456,11 @@ export function createTransport(config: TransportConfig): TransportService {
 
       const pending = pendingConnections.get(peerName);
       if (pending) {
-        handleMessage(peerName, raw, false);
+        enqueueMessage(raw, false);
       } else {
         const conn = connections.get(peerName);
         if (conn && conn.approved) {
-          handleMessage(peerName, raw, true);
+          enqueueMessage(raw, true);
         }
       }
     });

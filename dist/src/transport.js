@@ -25,6 +25,7 @@ export function createTransport(config) {
     const inFlightSends = new Map();
     const chunkAssemblies = new Map();
     const autoRequestedCapabilities = new Set();
+    const peerMessageQueues = new Map();
     const peerTrustWarnings = new Map();
     const challengeNonces = new Map();
     const previewRequests = new Map();
@@ -1170,6 +1171,18 @@ export function createTransport(config) {
         }
     };
     const setupSocket = (socket, peerName, isIncoming) => {
+        const enqueueMessage = (raw, approved) => {
+            const previous = peerMessageQueues.get(peerName) ?? Promise.resolve();
+            const next = previous
+                .catch(() => { })
+                .then(() => handleMessage(peerName, raw, approved));
+            peerMessageQueues.set(peerName, next);
+            void next.finally(() => {
+                if (peerMessageQueues.get(peerName) === next) {
+                    peerMessageQueues.delete(peerName);
+                }
+            });
+        };
         socket.on("message", (data) => {
             if (isRawMessageTooLarge(data.length)) {
                 logger.warn(`Rejected oversized raw message from ${peerName}: ${data.length} bytes`);
@@ -1190,12 +1203,12 @@ export function createTransport(config) {
             }
             const pending = pendingConnections.get(peerName);
             if (pending) {
-                handleMessage(peerName, raw, false);
+                enqueueMessage(raw, false);
             }
             else {
                 const conn = connections.get(peerName);
                 if (conn && conn.approved) {
-                    handleMessage(peerName, raw, true);
+                    enqueueMessage(raw, true);
                 }
             }
         });
